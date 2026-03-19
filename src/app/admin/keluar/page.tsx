@@ -1,7 +1,6 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import Link from 'next/link'
 import { getKeluar, getBarang, addKeluar, updateKeluar, deleteKeluar, type Keluar, type Barang } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
@@ -175,7 +174,6 @@ export default function KeluarPage() {
       const [keluar, barang] = await Promise.all([getKeluar(), getBarang()])
       setData(keluar)
       setBarangList(barang)
-      sessionStorage.setItem('barangCache', JSON.stringify(barang))
     } catch {
       setError('Gagal memuat data.')
     } finally {
@@ -184,6 +182,13 @@ export default function KeluarPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  function openAdd() {
+    setEditId(null)
+    setItems([makeItem()])
+    setItemErrors([{}])
+    setModalOpen(true)
+  }
 
   function openEdit(row: Keluar) {
     const { id, ...rest } = row
@@ -201,6 +206,11 @@ export default function KeluarPage() {
       ;(Object.keys(updates) as (keyof ItemErrors)[]).forEach((k) => delete next[k])
       return next
     }))
+  }
+
+  function addItem() {
+    setItems((prev) => [...prev, makeItem()])
+    setItemErrors((prev) => [...prev, {}])
   }
 
   function removeItem(index: number) {
@@ -256,39 +266,36 @@ export default function KeluarPage() {
     }
   }
 
-  const PAGE_SIZE = 15
+  const PAGE_SIZE = 10
   const [page, setPage] = useState(1)
 
   useEffect(() => { setPage(1) }, [search])
 
-  const filtered = data
-    .filter((d) => {
-      const q = search.toLowerCase()
-      return (
-        d.kode_barang.toLowerCase().includes(q) ||
-        d.nama_barang.toLowerCase().includes(q) ||
-        d.merk.toLowerCase().includes(q) ||
-        d.keterangan.toLowerCase().includes(q) ||
-        d.tanggal.toLowerCase().includes(q)
-      )
-    })
-    .sort((a, b) => b.tanggal.localeCompare(a.tanggal))
+  const filtered = data.filter((d) => {
+    const q = search.toLowerCase()
+    return (
+      d.kode_barang.toLowerCase().includes(q) ||
+      d.nama_barang.toLowerCase().includes(q) ||
+      d.merk.toLowerCase().includes(q) ||
+      d.keterangan.toLowerCase().includes(q)
+    )
+  })
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const currentPage = Math.min(Math.max(1, page), totalPages)
   const paginated = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE)
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-6">
+    <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Persediaan Keluar</h1>
         <div className="flex gap-2">
           <button onClick={load} className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors">
             🔄 Refresh
           </button>
-          <Link href="/keluar/input" className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 transition-colors">
+          <button onClick={openAdd} className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 transition-colors">
             + Tambah
-          </Link>
+          </button>
         </div>
       </div>
 
@@ -432,6 +439,15 @@ export default function KeluarPage() {
                     errors={itemErrors[i] ?? {}}
                   />
                 ))}
+                {!editId && (
+                  <button
+                    type="button"
+                    onClick={addItem}
+                    className="w-full border-2 border-dashed border-gray-300 text-gray-500 rounded-lg py-2.5 text-sm hover:border-orange-400 hover:text-orange-500 transition-colors"
+                  >
+                    + Tambah Item
+                  </button>
+                )}
               </>
             )}
 

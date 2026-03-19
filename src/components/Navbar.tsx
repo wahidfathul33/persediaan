@@ -1,24 +1,28 @@
 'use client'
 
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { useState } from 'react'
 
 const links = [
-  { href: '/', label: 'Dashboard' },
-  { href: '/barang', label: 'Master Barang' },
-  { href: '/masuk', label: 'Persediaan Masuk' },
-  { href: '/keluar', label: 'Persediaan Keluar' },
-  { href: '/stok', label: 'Laporan Stok' },
+  { href: '/admin', label: 'Dashboard' },
+  { href: '/admin/barang', label: 'Master Barang' },
+  { href: '/admin/masuk', label: 'Persediaan Masuk' },
+  { href: '/admin/keluar', label: 'Persediaan Keluar' },
+  { href: '/admin/stok', label: 'Laporan Stok' },
 ]
-
-const STANDALONE_PATHS = ['/keluar/input']
 
 export default function Navbar() {
   const pathname = usePathname()
+  const router = useRouter()
   const [open, setOpen] = useState(false)
 
-  if (STANDALONE_PATHS.includes(pathname)) return null
+  async function handleLogout() {
+    await fetch('/api/admin/logout', { method: 'POST' })
+    router.push('/admin/login')
+  }
+
+  const isLoginPage = pathname === '/admin/login'
 
   return (
     <nav className="bg-blue-700 text-white shadow-lg">
@@ -29,7 +33,7 @@ export default function Navbar() {
               📦 Persediaan SDMK
             </span>
             <div className="hidden md:flex gap-1">
-              {links.map((l) => (
+              {!isLoginPage && links.map((l) => (
                 <Link
                   key={l.href}
                   href={l.href}
@@ -46,14 +50,26 @@ export default function Navbar() {
           </div>
 
           {/* Mobile menu button */}
-          <button
-            className="md:hidden p-2 rounded hover:bg-blue-600"
-            onClick={() => setOpen(!open)}
-          >
-            <span className="block w-5 h-0.5 bg-white mb-1" />
-            <span className="block w-5 h-0.5 bg-white mb-1" />
-            <span className="block w-5 h-0.5 bg-white" />
-          </button>
+          <div className="flex items-center gap-2">
+            {!isLoginPage && (
+              <button
+                onClick={handleLogout}
+                className="hidden md:block text-sm px-3 py-1.5 rounded border border-blue-400 hover:bg-blue-600 transition-colors"
+              >
+                Keluar
+              </button>
+            )}
+            {!isLoginPage && (
+              <button
+                className="md:hidden p-2 rounded hover:bg-blue-600"
+                onClick={() => setOpen(!open)}
+              >
+                <span className="block w-5 h-0.5 bg-white mb-1" />
+                <span className="block w-5 h-0.5 bg-white mb-1" />
+                <span className="block w-5 h-0.5 bg-white" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -74,6 +90,14 @@ export default function Navbar() {
               {l.label}
             </Link>
           ))}
+          {!isLoginPage && (
+            <button
+              onClick={() => { setOpen(false); handleLogout() }}
+              className="block w-full text-left px-3 py-2 rounded text-sm font-medium mt-1 hover:bg-blue-600 transition-colors"
+            >
+              Keluar
+            </button>
+          )}
         </div>
       )}
     </nav>

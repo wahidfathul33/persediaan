@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { getBarang, addKeluar, type Barang, type Keluar } from '@/lib/api'
 import SearchableSelect from '@/components/SearchableSelect'
 
@@ -163,9 +164,15 @@ export default function KeluarInputPage() {
   const [submitError, setSubmitError] = useState('')
 
   useEffect(() => {
-    getBarang()
-      .then(setBarangList)
-      .finally(() => setBarangLoading(false))
+    const cached = sessionStorage.getItem('barangCache')
+    if (cached) {
+      setBarangList(JSON.parse(cached))
+      setBarangLoading(false)
+    } else {
+      getBarang()
+        .then(setBarangList)
+        .finally(() => setBarangLoading(false))
+    }
   }, [])
 
   function updateItem(index: number, updates: Partial<ItemForm>) {
@@ -223,8 +230,8 @@ export default function KeluarInputPage() {
 
   if (success) {
     return (
-      <div className="min-h-screen bg-orange-50 flex items-center justify-center p-4 -mx-4 -my-6">
-        <div className="bg-white rounded-2xl shadow-lg p-8 max-w-sm w-full text-center">
+      <div className="flex items-center justify-center py-12">
+        <div className="bg-white rounded-2xl shadow-lg p-8 max-w-sm w-full text-center border border-gray-200">
           <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <svg className="w-8 h-8 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -234,25 +241,36 @@ export default function KeluarInputPage() {
           <p className="text-gray-500 text-sm mb-6">
             {items.length > 1 ? `${items.length} item` : '1 item'} persediaan keluar telah disimpan.
           </p>
-          <button
-            onClick={handleReset}
-            className="w-full bg-orange-500 text-white py-2.5 rounded-xl font-medium hover:bg-orange-600 transition-colors"
-          >
-            Input Lagi
-          </button>
+          <div className="flex flex-col gap-2">
+            <button
+              onClick={handleReset}
+              className="w-full bg-orange-500 text-white py-2.5 rounded-xl font-medium hover:bg-orange-600 transition-colors"
+            >
+              Input Lagi
+            </button>
+            <Link
+              href="/keluar"
+              className="w-full border border-gray-300 text-gray-700 py-2.5 rounded-xl font-medium hover:bg-gray-50 transition-colors text-center"
+            >
+              ← Kembali ke Daftar
+            </Link>
+          </div>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-orange-50 py-8 px-4 -mx-4 -my-6">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-6">
+    <div className="max-w-7xl mx-auto px-4 py-6">
+      {/* Header */}
+      <div className="mb-6 flex items-center justify-between">
+        <div>
           <h1 className="text-2xl font-bold text-gray-800">Form Persediaan Keluar</h1>
-          <p className="text-gray-500 text-sm mt-1">Isi data barang yang akan dikeluarkan</p>
         </div>
+        <Link href="/keluar" className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors">
+          ← Kembali
+        </Link>
+      </div>
 
         {barangLoading ? (
           <div className="bg-white rounded-2xl shadow p-10 flex items-center justify-center gap-3 text-gray-500 text-sm">
@@ -296,8 +314,7 @@ export default function KeluarInputPage() {
               {saving ? 'Menyimpan...' : `Simpan${items.length > 1 ? ` (${items.length} item)` : ''}`}
             </button>
           </form>
-        )}
-      </div>
+      )}
     </div>
   )
 }

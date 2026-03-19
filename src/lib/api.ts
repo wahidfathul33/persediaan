@@ -44,8 +44,15 @@ export interface StokItem {
 function parseDate(val: unknown): string {
   if (!val) return ''
   const s = String(val)
+  // Jika sudah format YYYY-MM-DD, langsung return tanpa parsing lewat Date
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
   const d = new Date(s)
-  if (!isNaN(d.getTime())) return d.toISOString().split('T')[0]
+  if (!isNaN(d.getTime())) {
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    return `${yyyy}-${mm}-${dd}`
+  }
   return s
 }
 
