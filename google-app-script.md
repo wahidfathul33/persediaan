@@ -1,3 +1,7 @@
+// SETUP ROLLOVER_SECRET:
+// Di Google Apps Script, buka menu: Extensions → Apps Script → Project Settings → Script Properties
+// Tambahkan property: ROLLOVER_SECRET = <nilai secret yang sama dengan env ROLLOVER_SECRET di Vercel>
+
 const ss = SpreadsheetApp.getActiveSpreadsheet()
 
 const sheetBarang     = ss.getSheetByName("List Barang")
@@ -107,13 +111,39 @@ function getKeluar(type, month, year) {
 
 }
 
+// ── Rollover Saldo Awal (dipanggil tiap tanggal 1 via Vercel Cron) ────────────
+
+function rolloverSaldo(secret) {
+
+  const ROLLOVER_SECRET = PropertiesService.getScriptProperties().getProperty('ROLLOVER_SECRET')
+  if (!ROLLOVER_SECRET || secret !== ROLLOVER_SECRET) return false
+
+  const rows = sheetBarang.getDataRange().getValues()
+  // Mulai dari baris 2 (index 1) untuk melewati header
+  for (let i = 1; i < rows.length; i++) {
+    const sisaSaldo = Number(rows[i][6]) // kolom G (index 6) = sisa_saldo
+    sheetBarang.getRange(i + 1, 6).setValue(sisaSaldo) // kolom F (index 6 di getRange = 1-based 6) = saldo_awal
+  }
+
+  return true
+
+}
+
 // ── doPost ────────────────────────────────────────────────────────────────────
 
 function doPost(e) {
 
   const data   = JSON.parse(e.postData.contents)
-  const action = data.action  // "add" | "update" | "delete"
+  const action = data.action  // "add" | "update" | "delete" | "rollover"
   const type   = data.type    // "atk" | "rt" | "obat"
+
+  // ── ROLLOVER SALDO ────────────────────────────────────────────────────────
+  if (action == "rollover") {
+    const success = rolloverSaldo(data.cronSecret)
+    return ContentService
+      .createTextOutput(JSON.stringify({ status: success ? "success" : "unauthorized" }))
+      .setMimeType(ContentService.MimeType.JSON)
+  }
 
   const sheet = getKeluarSheet(type)
 

@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/rollover-saldo",
+      "schedule": "0 19 * * *"
+    }
+  ]
+}
