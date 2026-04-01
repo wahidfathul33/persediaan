@@ -1,11 +1,19 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { getKeluar, getBarang, addKeluar, updateKeluar, deleteKeluar, type Keluar, type Barang } from '@/lib/api'
+import { getKeluar, getBarang, addKeluar, updateKeluar, deleteKeluar, type Keluar, type Barang, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
 
-type ItemForm = Omit<Keluar, 'id'>
+const TYPES: { value: KeluarType; label: string }[] = [
+  { value: 'atk', label: 'ATK' },
+  { value: 'rt', label: 'Rumah Tangga' },
+  { value: 'obat', label: 'Obat' },
+]
+
+const MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
+
+type ItemForm = Omit<Keluar, 'id' | 'sisa_saldo'>
 type ItemErrors = Partial<Record<'nama_barang' | 'merk' | 'tanggal' | 'qty', string>>
 
 function makeItem(): ItemForm {
@@ -14,7 +22,7 @@ function makeItem(): ItemForm {
     kode_barang: '',
     nama_barang: '',
     merk: '',
-    uom: '',
+    satuan: '',
     tanggal: new Date().toISOString().split('T')[0],
     qty: 1,
     keterangan: '',
@@ -45,14 +53,16 @@ function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, error
       return acc
     }, [])
 
+  const selectedBarang = barangList.find((b) => b.id === item.id_barang)
+
   function handleNama(nama: string) {
-    onChange({ nama_barang: nama, merk: '', id_barang: '', kode_barang: '', uom: '' })
+    onChange({ nama_barang: nama, merk: '', id_barang: '', kode_barang: '', satuan: '' })
   }
 
   function handleMerk(merk: string) {
-    if (!merk) { onChange({ merk: '', id_barang: '', kode_barang: '', uom: '' }); return }
+    if (!merk) { onChange({ merk: '', id_barang: '', kode_barang: '', satuan: '' }); return }
     const b = barangList.find((x) => x.nama_barang === item.nama_barang && x.merk === merk)
-    if (b) onChange({ merk, id_barang: b.id, kode_barang: b.kode_barang, uom: b.uom })
+    if (b) onChange({ merk, id_barang: b.id, kode_barang: b.kode_barang, satuan: b.satuan })
     else onChange({ merk })
   }
 
@@ -120,7 +130,7 @@ function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, error
 
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">
-            Qty <span className="text-red-500">*</span>
+            Jumlah Keluar <span className="text-red-500">*</span>
           </label>
           <div className="flex items-center gap-1.5">
             <input
@@ -131,10 +141,13 @@ function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, error
               className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 ${errors.qty ? 'border-red-400' : 'border-gray-300'}`}
             />
             <span className="text-xs text-gray-600 bg-gray-200 px-2 py-2 rounded whitespace-nowrap min-w-[2.5rem] text-center">
-              {item.uom || '-'}
+              {item.satuan || '-'}
             </span>
           </div>
           {errors.qty && <p className="text-red-500 text-xs mt-1">{errors.qty}</p>}
+          {selectedBarang && (
+            <p className="text-xs text-blue-600 mt-1">Sisa stok: {selectedBarang.sisa_saldo}</p>
+          )}
         </div>
       </div>
 
@@ -155,6 +168,10 @@ function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, error
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function KeluarPage() {
+  const now = new Date()
+  const [activeType, setActiveType] = useState<KeluarType>('atk')
+  const [month, setMonth] = useState(now.getMonth() + 1)
+  const [year, setYear] = useState(now.getFullYear())
   const [data, setData] = useState<Keluar[]>([])
   const [barangList, setBarangList] = useState<Barang[]>([])
   const [loading, setLoading] = useState(true)
@@ -166,22 +183,26 @@ export default function KeluarPage() {
   const [items, setItems] = useState<ItemForm[]>([makeItem()])
   const [itemErrors, setItemErrors] = useState<ItemErrors[]>([{}])
   const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+
+  useEffect(() => {
+    getBarang().then(setBarangList).catch(() => {})
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const [keluar, barang] = await Promise.all([getKeluar(), getBarang()])
+      const keluar = await getKeluar(activeType, month, year)
       setData(keluar)
-      setBarangList(barang)
     } catch {
       setError('Gagal memuat data.')
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [activeType, month, year])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { setPage(1); load() }, [load])
 
   function openAdd() {
     setEditId(null)
@@ -191,7 +212,8 @@ export default function KeluarPage() {
   }
 
   function openEdit(row: Keluar) {
-    const { id, ...rest } = row
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { id, sisa_saldo, ...rest } = row
     setEditId(id)
     setItems([rest])
     setItemErrors([{}])
@@ -237,14 +259,15 @@ export default function KeluarPage() {
     setSaving(true)
     try {
       if (editId) {
-        await updateKeluar({ ...items[0], id: editId })
+        await updateKeluar(activeType, { ...items[0], id: editId })
       } else {
         for (const item of items) {
-          await addKeluar(item)
+          await addKeluar(activeType, item)
         }
       }
       setModalOpen(false)
       await load()
+      getBarang().then(setBarangList).catch(() => {})
     } catch {
       alert('Gagal menyimpan data.')
     } finally {
@@ -256,9 +279,10 @@ export default function KeluarPage() {
     if (!deleteId) return
     setSaving(true)
     try {
-      await deleteKeluar(deleteId)
+      await deleteKeluar(activeType, deleteId)
       setDeleteId(null)
       await load()
+      getBarang().then(setBarangList).catch(() => {})
     } catch {
       alert('Gagal menghapus data.')
     } finally {
@@ -267,7 +291,6 @@ export default function KeluarPage() {
   }
 
   const PAGE_SIZE = 10
-  const [page, setPage] = useState(1)
 
   useEffect(() => { setPage(1) }, [search])
 
@@ -287,7 +310,7 @@ export default function KeluarPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-800">Persediaan Keluar</h1>
         <div className="flex gap-2">
           <button onClick={load} className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors">
@@ -297,6 +320,64 @@ export default function KeluarPage() {
             + Tambah
           </button>
         </div>
+      </div>
+
+      {/* Type tabs */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200">
+        {TYPES.map((t) => (
+          <button
+            key={t.value}
+            onClick={() => { setActiveType(t.value); setSearch('') }}
+            className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors ${
+              activeType === t.value
+                ? 'border-orange-500 text-orange-600 bg-orange-50'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Month/year picker */}
+      <div className="inline-flex items-center gap-0 mb-4 bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+        <button
+          onClick={() => {
+            if (month === 1) { setMonth(12); setYear((y) => y - 1) }
+            else setMonth((m) => m - 1)
+          }}
+          className="px-3 py-2.5 text-gray-500 hover:bg-gray-100 transition-colors text-lg leading-none"
+        >
+          ‹
+        </button>
+        <div className="flex items-center gap-2 px-3 py-2 border-x border-gray-200">
+          <select
+            value={month}
+            onChange={(e) => setMonth(Number(e.target.value))}
+            className="text-sm font-semibold text-gray-800 bg-transparent focus:outline-none cursor-pointer"
+          >
+            {MONTHS.map((m, i) => (
+              <option key={i} value={i + 1}>{m}</option>
+            ))}
+          </select>
+          <input
+            type="number"
+            value={year}
+            onChange={(e) => setYear(Number(e.target.value))}
+            className="text-sm font-semibold text-gray-800 bg-transparent w-16 focus:outline-none text-center"
+            min={2020}
+            max={2099}
+          />
+        </div>
+        <button
+          onClick={() => {
+            if (month === 12) { setMonth(1); setYear((y) => y + 1) }
+            else setMonth((m) => m + 1)
+          }}
+          className="px-3 py-2.5 text-gray-500 hover:bg-gray-100 transition-colors text-lg leading-none"
+        >
+          ›
+        </button>
       </div>
 
       <div className="bg-white rounded-xl shadow border border-gray-200">
@@ -323,13 +404,13 @@ export default function KeluarPage() {
                 <tr>
                   <th className="px-4 py-3 text-left">No</th>
                   <th className="px-4 py-3 text-left">ID</th>
-                  <th className="px-4 py-3 text-left">ID Barang</th>
                   <th className="px-4 py-3 text-left">Kode Barang</th>
                   <th className="px-4 py-3 text-left">Nama Barang</th>
                   <th className="px-4 py-3 text-left">Merk</th>
-                  <th className="px-4 py-3 text-left">UOM</th>
+                  <th className="px-4 py-3 text-left">Satuan</th>
                   <th className="px-4 py-3 text-left">Tanggal</th>
-                  <th className="px-4 py-3 text-right">Qty</th>
+                  <th className="px-4 py-3 text-right">Jml Keluar</th>
+                  <th className="px-4 py-3 text-right">Sisa Saldo</th>
                   <th className="px-4 py-3 text-left">Keterangan</th>
                   <th className="px-4 py-3 text-center">Aksi</th>
                 </tr>
@@ -342,13 +423,13 @@ export default function KeluarPage() {
                     <tr key={`${row.id}-${i}`} className="hover:bg-gray-50">
                       <td className="px-4 py-3 text-gray-500">{(currentPage - 1) * PAGE_SIZE + i + 1}</td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-400">{row.id}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-gray-400">{row.id_barang}</td>
                       <td className="px-4 py-3 font-mono text-xs text-gray-600">{row.kode_barang}</td>
                       <td className="px-4 py-3 font-medium text-gray-800">{row.nama_barang}</td>
                       <td className="px-4 py-3 text-gray-600">{row.merk}</td>
-                      <td className="px-4 py-3 text-gray-600">{row.uom}</td>
+                      <td className="px-4 py-3 text-gray-600">{row.satuan}</td>
                       <td className="px-4 py-3 text-gray-600">{row.tanggal}</td>
                       <td className="px-4 py-3 text-right font-medium text-orange-600">{row.qty}</td>
+                      <td className="px-4 py-3 text-right font-medium text-blue-600">{row.sisa_saldo}</td>
                       <td className="px-4 py-3 text-gray-500 text-xs max-w-32 truncate">{row.keterangan}</td>
                       <td className="px-4 py-3 text-center">
                         <div className="flex gap-1 justify-center">
@@ -373,9 +454,7 @@ export default function KeluarPage() {
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={currentPage === 1}
                 className="px-2 py-1 rounded text-sm border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                ‹
-              </button>
+              >‹</button>
               {Array.from({ length: totalPages }, (_, idx) => idx + 1)
                 .filter((p) => p === 1 || p === totalPages || Math.abs(p - currentPage) <= 1)
                 .reduce<(number | '...')[]>((acc, p, i, arr) => {
@@ -390,23 +469,15 @@ export default function KeluarPage() {
                     <button
                       key={p}
                       onClick={() => setPage(p as number)}
-                      className={`px-3 py-1 rounded text-sm border ${
-                        currentPage === p
-                          ? 'bg-orange-500 text-white border-orange-500'
-                          : 'border-gray-300 text-gray-600 hover:bg-gray-50'
-                      }`}
-                    >
-                      {p}
-                    </button>
+                      className={`px-3 py-1 rounded text-sm border ${currentPage === p ? 'bg-orange-500 text-white border-orange-500' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+                    >{p}</button>
                   )
                 )}
               <button
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                 disabled={currentPage === totalPages}
                 className="px-2 py-1 rounded text-sm border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                ›
-              </button>
+              >›</button>
             </div>
           )}
         </div>
@@ -415,42 +486,32 @@ export default function KeluarPage() {
       {/* Add/Edit Modal */}
       {modalOpen && (
         <Modal
-          title={editId ? 'Edit Persediaan Keluar' : 'Tambah Persediaan Keluar'}
+          title={editId ? 'Edit Persediaan Keluar' : `Tambah Keluar ${TYPES.find(t => t.value === activeType)?.label}`}
           onClose={() => setModalOpen(false)}
           size="xxl"
         >
           <form onSubmit={handleSubmit} className="space-y-3">
-            {loading && barangList.length === 0 ? (
-              <div className="flex items-center justify-center py-12 text-gray-500 text-sm gap-3">
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-orange-500" />
-                Memuat data barang...
-              </div>
-            ) : (
-              <>
-                {items.map((item, i) => (
-                  <ItemRow
-                    key={i}
-                    index={i}
-                    item={item}
-                    barangList={barangList}
-                    onChange={(updates) => updateItem(i, updates)}
-                    onRemove={() => removeItem(i)}
-                    canRemove={items.length > 1}
-                    errors={itemErrors[i] ?? {}}
-                  />
-                ))}
-                {!editId && (
-                  <button
-                    type="button"
-                    onClick={addItem}
-                    className="w-full border-2 border-dashed border-gray-300 text-gray-500 rounded-lg py-2.5 text-sm hover:border-orange-400 hover:text-orange-500 transition-colors"
-                  >
-                    + Tambah Item
-                  </button>
-                )}
-              </>
+            {items.map((item, i) => (
+              <ItemRow
+                key={i}
+                index={i}
+                item={item}
+                barangList={barangList}
+                onChange={(updates) => updateItem(i, updates)}
+                onRemove={() => removeItem(i)}
+                canRemove={items.length > 1}
+                errors={itemErrors[i] ?? {}}
+              />
+            ))}
+            {!editId && (
+              <button
+                type="button"
+                onClick={addItem}
+                className="w-full border-2 border-dashed border-gray-300 text-gray-500 rounded-lg py-2.5 text-sm hover:border-orange-400 hover:text-orange-500 transition-colors"
+              >
+                + Tambah Item
+              </button>
             )}
-
             <div className="flex gap-2 justify-end pt-3 border-t border-gray-100">
               <button
                 type="button"
@@ -461,14 +522,10 @@ export default function KeluarPage() {
               </button>
               <button
                 type="submit"
-                disabled={saving || (loading && barangList.length === 0)}
+                disabled={saving}
                 className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 disabled:opacity-50"
               >
-                {saving
-                  ? 'Menyimpan...'
-                  : editId
-                  ? 'Update'
-                  : `Simpan${items.length > 1 ? ` (${items.length} item)` : ''}`}
+                {saving ? 'Menyimpan...' : editId ? 'Update' : `Simpan${items.length > 1 ? ` (${items.length} item)` : ''}`}
               </button>
             </div>
           </form>

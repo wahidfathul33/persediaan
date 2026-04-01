@@ -79,13 +79,15 @@ export default function BarangPage() {
                   <th className="px-4 py-3 text-left">Kode Barang</th>
                   <th className="px-4 py-3 text-left">Nama Barang</th>
                   <th className="px-4 py-3 text-left">Merk</th>
-                  <th className="px-4 py-3 text-left">UOM</th>
+                  <th className="px-4 py-3 text-left">Satuan</th>
+                  <th className="px-4 py-3 text-right">Saldo Awal</th>
+                  <th className="px-4 py-3 text-right">Sisa Saldo</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="text-center py-10 text-gray-400">
+                    <td colSpan={8} className="text-center py-10 text-gray-400">
                       Tidak ada data barang
                     </td>
                   </tr>
@@ -97,7 +99,9 @@ export default function BarangPage() {
                       <td className="px-4 py-3 font-mono text-xs text-gray-600">{b.kode_barang}</td>
                       <td className="px-4 py-3 font-medium text-gray-800">{b.nama_barang}</td>
                       <td className="px-4 py-3 text-gray-600">{b.merk}</td>
-                      <td className="px-4 py-3 text-gray-600">{b.uom}</td>
+                      <td className="px-4 py-3 text-gray-600">{b.satuan}</td>
+                      <td className="px-4 py-3 text-right font-medium text-gray-700">{b.saldo_awal}</td>
+                      <td className={`px-4 py-3 text-right font-bold ${b.sisa_saldo <= 0 ? 'text-red-600' : 'text-blue-600'}`}>{b.sisa_saldo}</td>
                     </tr>
                   ))
                 )}

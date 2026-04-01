@@ -1,22 +1,15 @@
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
 
+export type KeluarType = 'atk' | 'rt' | 'obat'
+
 export interface Barang {
   id: string
   kode_barang: string
   nama_barang: string
   merk: string
-  uom: string
-}
-
-export interface Masuk {
-  id: string
-  id_barang: string
-  kode_barang: string
-  nama_barang: string
-  merk: string
-  uom: string
-  tanggal: string
-  qty: number
+  satuan: string
+  saldo_awal: number
+  sisa_saldo: number
 }
 
 export interface Keluar {
@@ -25,20 +18,24 @@ export interface Keluar {
   kode_barang: string
   nama_barang: string
   merk: string
-  uom: string
+  satuan: string
   tanggal: string
   qty: number
+  sisa_saldo: number
   keterangan: string
 }
 
 export interface StokItem {
+  id_barang: string
   kode_barang: string
   nama_barang: string
   merk: string
-  uom: string
-  total_masuk: number
-  total_keluar: number
-  stok_akhir: number
+  satuan: string
+  saldo_awal: number
+  sisa_saldo: number
+  total_pemakaian: number
+  days_in_month: number
+  keluar_per_tanggal: number[]
 }
 
 function parseDate(val: unknown): string {
@@ -70,12 +67,16 @@ export async function getBarang(): Promise<Barang[]> {
     kode_barang: String(r[1]),
     nama_barang: String(r[2]),
     merk: String(r[3]),
-    uom: String(r[4]),
+    satuan: String(r[4]),
+    saldo_awal: Number(r[5]),
+    sisa_saldo: Number(r[6]),
   }))
 }
 
-export async function getMasuk(): Promise<Masuk[]> {
-  const res = await apiFetch(`${BASE_URL}?action=masuk`, { cache: 'no-store' })
+export async function getKeluar(type: KeluarType, month?: number, year?: number): Promise<Keluar[]> {
+  let url = `${BASE_URL}?action=keluar&type=${type}`
+  if (month && year) url += `&month=${month}&year=${year}`
+  const res = await apiFetch(url, { cache: 'no-store' })
   const data: unknown[][] = await res.json()
   return data.map((r) => ({
     id: String(r[0]),
@@ -83,25 +84,11 @@ export async function getMasuk(): Promise<Masuk[]> {
     kode_barang: String(r[2]),
     nama_barang: String(r[3]),
     merk: String(r[4]),
-    uom: String(r[5]),
+    satuan: String(r[5]),
     tanggal: parseDate(r[6]),
     qty: Number(r[7]),
-  }))
-}
-
-export async function getKeluar(): Promise<Keluar[]> {
-  const res = await apiFetch(`${BASE_URL}?action=keluar`, { cache: 'no-store' })
-  const data: unknown[][] = await res.json()
-  return data.map((r) => ({
-    id: String(r[0]),
-    id_barang: String(r[1]),
-    kode_barang: String(r[2]),
-    nama_barang: String(r[3]),
-    merk: String(r[4]),
-    uom: String(r[5]),
-    tanggal: parseDate(r[6]),
-    qty: Number(r[7]),
-    keterangan: String(r[8] ?? ''),
+    sisa_saldo: Number(r[8]),
+    keterangan: String(r[9] ?? ''),
   }))
 }
 
@@ -114,75 +101,19 @@ function postJSON(body: object) {
   })
 }
 
-export async function addMasuk(payload: Omit<Masuk, 'id'>): Promise<void> {
-  await postJSON({ ...payload, type: 'masuk', action: 'add' })
+export async function addKeluar(type: KeluarType, payload: Omit<Keluar, 'id' | 'sisa_saldo'>): Promise<void> {
+  await postJSON({ ...payload, type, action: 'add' })
 }
 
-export async function updateMasuk(payload: Masuk): Promise<void> {
-  await postJSON({ ...payload, type: 'masuk', action: 'update' })
+export async function updateKeluar(type: KeluarType, payload: Omit<Keluar, 'sisa_saldo'>): Promise<void> {
+  await postJSON({ ...payload, type, action: 'update' })
 }
 
-export async function deleteMasuk(id: string): Promise<void> {
-  await postJSON({ id, type: 'masuk', action: 'delete' })
+export async function deleteKeluar(type: KeluarType, id: string): Promise<void> {
+  await postJSON({ id, type, action: 'delete' })
 }
 
-export async function addKeluar(payload: Omit<Keluar, 'id'>): Promise<void> {
-  await postJSON({ ...payload, type: 'keluar', action: 'add' })
-}
-
-export async function updateKeluar(payload: Keluar): Promise<void> {
-  await postJSON({ ...payload, type: 'keluar', action: 'update' })
-}
-
-export async function deleteKeluar(id: string): Promise<void> {
-  await postJSON({ id, type: 'keluar', action: 'delete' })
-}
-
-export async function getStokData(): Promise<StokItem[]> {
-  const [masukList, keluarList, barangList] = await Promise.all([
-    getMasuk(),
-    getKeluar(),
-    getBarang(),
-  ])
-
-  const stokMap: Record<string, StokItem> = {}
-
-  masukList.forEach((m) => {
-    const key = m.kode_barang
-    if (!stokMap[key]) {
-      const b = barangList.find((x) => x.kode_barang === m.kode_barang)
-      stokMap[key] = {
-        kode_barang: m.kode_barang,
-        nama_barang: b?.nama_barang ?? m.nama_barang,
-        merk: b?.merk ?? m.merk,
-        uom: b?.uom ?? m.uom,
-        total_masuk: 0,
-        total_keluar: 0,
-        stok_akhir: 0,
-      }
-    }
-    stokMap[key].total_masuk += m.qty
-  })
-
-  keluarList.forEach((k) => {
-    const key = k.kode_barang
-    if (!stokMap[key]) {
-      const b = barangList.find((x) => x.kode_barang === k.kode_barang)
-      stokMap[key] = {
-        kode_barang: k.kode_barang,
-        nama_barang: b?.nama_barang ?? k.nama_barang,
-        merk: b?.merk ?? k.merk,
-        uom: b?.uom ?? k.uom,
-        total_masuk: 0,
-        total_keluar: 0,
-        stok_akhir: 0,
-      }
-    }
-    stokMap[key].total_keluar += k.qty
-  })
-
-  return Object.values(stokMap).map((s) => ({
-    ...s,
-    stok_akhir: s.total_masuk - s.total_keluar,
-  }))
+export async function getStokData(month: number, year: number): Promise<StokItem[]> {
+  const res = await apiFetch(`${BASE_URL}?action=stok&month=${month}&year=${year}`, { cache: 'no-store' })
+  return res.json()
 }

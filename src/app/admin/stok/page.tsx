@@ -3,9 +3,13 @@
 import { useEffect, useState } from 'react'
 import { getStokData, type StokItem } from '@/lib/api'
 
+const MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
+
 export default function StokPage() {
+  const now = new Date()
+  const [month, setMonth] = useState(now.getMonth() + 1)
+  const [year, setYear] = useState(now.getFullYear())
   const [data, setData] = useState<StokItem[]>([])
-  const [filtered, setFiltered] = useState<StokItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
@@ -14,9 +18,8 @@ export default function StokPage() {
     setLoading(true)
     setError('')
     try {
-      const result = await getStokData()
+      const result = await getStokData(month, year)
       setData(result)
-      setFiltered(result)
     } catch {
       setError('Gagal memuat data stok.')
     } finally {
@@ -24,25 +27,20 @@ export default function StokPage() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [month, year])
 
-  useEffect(() => {
-    const q = search.toLowerCase()
-    setFiltered(
-      data.filter(
-        (s) =>
-          s.kode_barang.toLowerCase().includes(q) ||
-          s.nama_barang.toLowerCase().includes(q) ||
-          s.merk.toLowerCase().includes(q)
-      )
-    )
-  }, [search, data])
+  const q = search.toLowerCase()
+  const filtered = data.filter(
+    (s) =>
+      String(s.kode_barang ?? '').toLowerCase().includes(q) ||
+      String(s.nama_barang ?? '').toLowerCase().includes(q) ||
+      String(s.merk ?? '').toLowerCase().includes(q)
+  )
 
-  const totalMasuk = filtered.reduce((sum, s) => sum + s.total_masuk, 0)
-  const totalKeluar = filtered.reduce((sum, s) => sum + s.total_keluar, 0)
-  const stokAkhir = filtered.reduce((sum, s) => sum + s.stok_akhir, 0)
-  const habis = filtered.filter((s) => s.stok_akhir <= 0).length
-  const rendah = filtered.filter((s) => s.stok_akhir > 0 && s.stok_akhir <= 5).length
+  const daysInMonth = data[0]?.days_in_month ?? 30
+  const totalPemakaian = filtered.reduce((sum, s) => sum + s.total_pemakaian, 0)
+  const habis = filtered.filter((s) => s.sisa_saldo <= 0).length
 
   return (
     <div>
@@ -53,14 +51,55 @@ export default function StokPage() {
         </button>
       </div>
 
+      {/* Month/year filter */}
+      {/* Month/year picker */}
+      <div className="inline-flex items-center gap-0 mb-4 bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+        <button
+          onClick={() => {
+            if (month === 1) { setMonth(12); setYear((y) => y - 1) }
+            else setMonth((m) => m - 1)
+          }}
+          className="px-3 py-2.5 text-gray-500 hover:bg-gray-100 transition-colors text-lg leading-none"
+        >
+          ‹
+        </button>
+        <div className="flex items-center gap-2 px-3 py-2 border-x border-gray-200">
+          <select
+            value={month}
+            onChange={(e) => setMonth(Number(e.target.value))}
+            className="text-sm font-semibold text-gray-800 bg-transparent focus:outline-none cursor-pointer"
+          >
+            {MONTHS.map((m, i) => (
+              <option key={i} value={i + 1}>{m}</option>
+            ))}
+          </select>
+          <input
+            type="number"
+            value={year}
+            onChange={(e) => setYear(Number(e.target.value))}
+            className="text-sm font-semibold text-gray-800 bg-transparent w-16 focus:outline-none text-center"
+            min={2020}
+            max={2099}
+          />
+        </div>
+        <button
+          onClick={() => {
+            if (month === 12) { setMonth(1); setYear((y) => y + 1) }
+            else setMonth((m) => m + 1)
+          }}
+          className="px-3 py-2.5 text-gray-500 hover:bg-gray-100 transition-colors text-lg leading-none"
+        >
+          ›
+        </button>
+      </div>
+
       {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         {[
           { label: 'Total Jenis', value: filtered.length, color: 'border-blue-300 bg-blue-50 text-blue-800' },
-          { label: 'Total Masuk', value: totalMasuk, color: 'border-green-300 bg-green-50 text-green-800' },
-          { label: 'Total Keluar', value: totalKeluar, color: 'border-orange-300 bg-orange-50 text-orange-800' },
-          { label: 'Stok Akhir', value: stokAkhir, color: 'border-purple-300 bg-purple-50 text-purple-800' },
+          { label: 'Total Pemakaian', value: totalPemakaian, color: 'border-orange-300 bg-orange-50 text-orange-800' },
           { label: 'Stok Habis', value: habis, color: 'border-red-300 bg-red-50 text-red-800' },
+          { label: 'Periode', value: `${MONTHS[month - 1]} ${year}`, color: 'border-gray-300 bg-gray-50 text-gray-800' },
         ].map((c) => (
           <div key={c.label} className={`border rounded-xl p-4 ${c.color}`}>
             <div className="text-2xl font-bold">{c.value}</div>
@@ -70,7 +109,7 @@ export default function StokPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow border border-gray-200">
-        <div className="px-4 py-3 border-b flex items-center justify-between">
+        <div className="px-4 py-3 border-b">
           <input
             type="text"
             placeholder="Cari kode, nama, atau merk..."
@@ -78,11 +117,6 @@ export default function StokPage() {
             onChange={(e) => setSearch(e.target.value)}
             className="w-full max-w-xs border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
-          {rendah > 0 && (
-            <span className="ml-4 text-sm text-yellow-700 bg-yellow-50 border border-yellow-200 px-3 py-1 rounded-full">
-              ⚠ {rendah} item stok rendah
-            </span>
-          )}
         </div>
 
         {loading ? (
@@ -93,62 +127,54 @@ export default function StokPage() {
           <div className="p-6 text-red-600 text-sm">{error}</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="text-sm border-collapse">
               <thead className="bg-gray-50 text-gray-500 uppercase text-xs">
                 <tr>
-                  <th className="px-4 py-3 text-left">No</th>
-                  <th className="px-4 py-3 text-left">Kode</th>
-                  <th className="px-4 py-3 text-left">Nama Barang</th>
-                  <th className="px-4 py-3 text-left">Merk</th>
-                  <th className="px-4 py-3 text-left">UOM</th>
-                  <th className="px-4 py-3 text-right">Total Masuk</th>
-                  <th className="px-4 py-3 text-right">Total Keluar</th>
-                  <th className="px-4 py-3 text-right">Stok Akhir</th>
-                  <th className="px-4 py-3 text-center">Status</th>
+                  <th className="px-3 py-3 text-left border border-gray-200 min-w-[32px]">No</th>
+                  <th className="px-3 py-3 text-left border border-gray-200 min-w-[80px]">Kode</th>
+                  <th className="px-3 py-3 text-left border border-gray-200 min-w-[160px]">Nama Barang</th>
+                  <th className="px-3 py-3 text-left border border-gray-200 min-w-[80px]">Merk</th>
+                  <th className="px-3 py-3 text-left border border-gray-200 min-w-[60px]">Satuan</th>
+                  <th className="px-3 py-3 text-right border border-gray-200 min-w-[70px]">Saldo Awal</th>
+                  {Array.from({ length: daysInMonth }, (_, i) => (
+                    <th key={i} className="px-1 py-3 text-center border border-gray-200 min-w-[30px]">{i + 1}</th>
+                  ))}
+                  <th className="px-3 py-3 text-right border border-gray-200 min-w-[90px] text-orange-600">Total Pakai</th>
+                  <th className="px-3 py-3 text-right border border-gray-200 min-w-[80px] text-blue-600">Sisa Saldo</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan={9} className="text-center py-10 text-gray-400">Belum ada data stok</td></tr>
+                  <tr>
+                    <td colSpan={6 + daysInMonth + 2} className="text-center py-10 text-gray-400">
+                      Belum ada data untuk periode ini
+                    </td>
+                  </tr>
                 ) : (
                   filtered.map((s, i) => (
-                    <tr key={s.kode_barang} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-gray-500">{i + 1}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-gray-500">{s.kode_barang}</td>
-                      <td className="px-4 py-3 font-medium text-gray-800">{s.nama_barang}</td>
-                      <td className="px-4 py-3 text-gray-600">{s.merk}</td>
-                      <td className="px-4 py-3 text-gray-600">{s.uom}</td>
-                      <td className="px-4 py-3 text-right text-green-700 font-medium">{s.total_masuk}</td>
-                      <td className="px-4 py-3 text-right text-orange-600 font-medium">{s.total_keluar}</td>
-                      <td className="px-4 py-3 text-right font-bold text-gray-900">{s.stok_akhir}</td>
-                      <td className="px-4 py-3 text-center">
-                        <span
-                          className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
-                            s.stok_akhir <= 0
-                              ? 'bg-red-100 text-red-700'
-                              : s.stok_akhir <= 5
-                              ? 'bg-yellow-100 text-yellow-700'
-                              : 'bg-green-100 text-green-700'
-                          }`}
+                    <tr key={`${s.id_barang}-${i}`} className="hover:bg-gray-50">
+                      <td className="px-3 py-2 text-gray-500 border border-gray-100">{i + 1}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-gray-500 border border-gray-100">{s.kode_barang}</td>
+                      <td className="px-3 py-2 font-medium text-gray-800 border border-gray-100">{s.nama_barang}</td>
+                      <td className="px-3 py-2 text-gray-600 border border-gray-100">{s.merk}</td>
+                      <td className="px-3 py-2 text-gray-600 border border-gray-100">{s.satuan}</td>
+                      <td className="px-3 py-2 text-right font-medium text-gray-700 border border-gray-100">{s.saldo_awal}</td>
+                      {s.keluar_per_tanggal.map((qty, d) => (
+                        <td
+                          key={d}
+                          className={`px-1 py-2 text-center border border-gray-100 text-xs ${qty > 0 ? 'text-orange-600 font-medium bg-orange-50' : 'text-gray-200'}`}
                         >
-                          {s.stok_akhir <= 0 ? 'Habis' : s.stok_akhir <= 5 ? 'Rendah' : 'Aman'}
-                        </span>
+                          {qty > 0 ? qty : ''}
+                        </td>
+                      ))}
+                      <td className="px-3 py-2 text-right font-bold text-orange-600 border border-gray-100">{s.total_pemakaian}</td>
+                      <td className={`px-3 py-2 text-right font-bold border border-gray-100 ${s.sisa_saldo <= 0 ? 'text-red-600' : 'text-blue-600'}`}>
+                        {s.sisa_saldo}
                       </td>
                     </tr>
                   ))
                 )}
               </tbody>
-              {filtered.length > 0 && (
-                <tfoot className="bg-gray-50 font-semibold text-gray-700">
-                  <tr>
-                    <td colSpan={5} className="px-4 py-3 text-right text-xs uppercase text-gray-500">Total</td>
-                    <td className="px-4 py-3 text-right text-green-700">{totalMasuk}</td>
-                    <td className="px-4 py-3 text-right text-orange-600">{totalKeluar}</td>
-                    <td className="px-4 py-3 text-right text-gray-900">{stokAkhir}</td>
-                    <td />
-                  </tr>
-                </tfoot>
-              )}
             </table>
           </div>
         )}
