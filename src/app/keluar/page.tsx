@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { getKeluar, getBarangGrouped, updateKeluar, deleteKeluar, type Keluar, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getKeluar, getBarangGrouped, updateKeluar, deleteKeluar, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
 
