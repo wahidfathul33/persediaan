@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { getBarang, getKeluar, getStokData, type StokItem } from '@/lib/api'
+import { getBarangGrouped, getKeluar, getStokData, type StokItem } from '@/lib/api'
 
 interface Summary {
   totalBarang: number
@@ -21,15 +21,16 @@ export default function DashboardPage() {
       const month = now.getMonth() + 1
       const year = now.getFullYear()
       try {
-        const [barang, atk, rt, obat, stokItems] = await Promise.all([
-          getBarang(),
+        const [grouped, atk, rt, obat, stokItems] = await Promise.all([
+          getBarangGrouped(),
           getKeluar('atk', month, year),
           getKeluar('rt', month, year),
           getKeluar('obat', month, year),
           getStokData(month, year),
         ])
+        const totalBarang = grouped.atk.length + grouped.rt.length + grouped.obat.length
         const totalKeluar = atk.length + rt.length + obat.length
-        setSummary({ totalBarang: barang.length, totalKeluar, stokItems })
+        setSummary({ totalBarang, totalKeluar, stokItems })
       } catch {
         setError('Gagal memuat data. Pastikan URL API sudah benar di .env.local')
       } finally {
@@ -117,7 +118,7 @@ export default function DashboardPage() {
                 <tr><td colSpan={8} className="text-center py-8 text-gray-400">Belum ada data stok</td></tr>
               ) : (
                 summary!.stokItems.slice(0, 10).map((s) => (
-                  <tr key={s.kode_barang} className="hover:bg-gray-50">
+                  <tr key={s.id_barang} className="hover:bg-gray-50">
                     <td className="px-4 py-3 font-mono text-xs text-gray-500">{s.kode_barang}</td>
                     <td className="px-4 py-3 font-medium text-gray-800">{s.nama_barang}</td>
                     <td className="px-4 py-3 text-gray-600">{s.merk}</td>
