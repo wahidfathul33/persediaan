@@ -90,15 +90,15 @@ function getBarang(type) {
 
   const sheetBarang = getBarangSheet(type)
   if (!sheetBarang) {
-    // Jika tidak ada type, gabungkan semua sheet barang
-    const allData = []
-    ;[sheetBarangATK, sheetBarangRT, sheetBarangObat].forEach(function(sheet) {
-      const data = sheet.getDataRange().getValues()
+    // Jika tidak ada type, kembalikan data terkelompok per type
+    const grouped = {}
+    ;[['atk', sheetBarangATK], ['rt', sheetBarangRT], ['obat', sheetBarangObat]].forEach(function(pair) {
+      const data = pair[1].getDataRange().getValues()
       data.shift()
-      allData.push.apply(allData, data)
+      grouped[pair[0]] = data
     })
     return ContentService
-      .createTextOutput(JSON.stringify(allData))
+      .createTextOutput(JSON.stringify(grouped))
       .setMimeType(ContentService.MimeType.JSON)
   }
 

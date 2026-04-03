@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { getBarang, addKeluar, type Barang, type KeluarType } from '@/lib/api'
+import { getBarangGrouped, addKeluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import SearchableSelect from '@/components/SearchableSelect'
 
 const TYPES: { value: KeluarType; label: string; desc: string; color: string }[] = [
@@ -177,7 +177,7 @@ function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, error
 
 export default function KeluarInputPage() {
   const [selectedType, setSelectedType] = useState<KeluarType | null>(null)
-  const [barangList, setBarangList] = useState<Barang[]>([])
+  const [barangGrouped, setBarangGrouped] = useState<BarangGrouped>({ atk: [], rt: [], obat: [] })
   const [barangLoading, setBarangLoading] = useState(true)
   const [items, setItems] = useState<ItemForm[]>([makeItem()])
   const [itemErrors, setItemErrors] = useState<ItemErrors[]>([{}])
@@ -186,8 +186,8 @@ export default function KeluarInputPage() {
   const [submitError, setSubmitError] = useState('')
 
   useEffect(() => {
-    getBarang()
-      .then(setBarangList)
+    getBarangGrouped()
+      .then(setBarangGrouped)
       .finally(() => setBarangLoading(false))
   }, [])
 
@@ -336,7 +336,7 @@ export default function KeluarInputPage() {
               key={i}
               index={i}
               item={item}
-              barangList={barangList}
+              barangList={barangGrouped[selectedType]}
               onChange={(updates) => updateItem(i, updates)}
               onRemove={() => removeItem(i)}
               canRemove={items.length > 1}

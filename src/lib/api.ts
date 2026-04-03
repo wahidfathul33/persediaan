@@ -12,6 +12,12 @@ export interface Barang {
   sisa_saldo: number
 }
 
+export interface BarangGrouped {
+  atk: Barang[]
+  rt: Barang[]
+  obat: Barang[]
+}
+
 export interface Keluar {
   id: string
   id_barang: string
@@ -59,11 +65,8 @@ async function apiFetch(input: RequestInfo, init?: RequestInit) {
   return res
 }
 
-export async function getBarang(type?: KeluarType): Promise<Barang[]> {
-  const url = type ? `${BASE_URL}?action=barang&type=${type}` : `${BASE_URL}?action=barang`
-  const res = await apiFetch(url, { cache: 'no-store' })
-  const data: unknown[][] = await res.json()
-  return data.map((r) => ({
+function parseBarangRow(r: unknown[]): Barang {
+  return {
     id: String(r[0]),
     kode_barang: String(r[1]),
     nama_barang: String(r[2]),
@@ -71,7 +74,23 @@ export async function getBarang(type?: KeluarType): Promise<Barang[]> {
     satuan: String(r[4]),
     saldo_awal: Number(r[5]),
     sisa_saldo: Number(r[6]),
-  }))
+  }
+}
+
+export async function getBarangGrouped(): Promise<BarangGrouped> {
+  const res = await apiFetch(`${BASE_URL}?action=barang`, { cache: 'no-store' })
+  const data: Record<KeluarType, unknown[][]> = await res.json()
+  return {
+    atk: (data.atk ?? []).map(parseBarangRow),
+    rt: (data.rt ?? []).map(parseBarangRow),
+    obat: (data.obat ?? []).map(parseBarangRow),
+  }
+}
+
+export async function getBarang(type: KeluarType): Promise<Barang[]> {
+  const res = await apiFetch(`${BASE_URL}?action=barang&type=${type}`, { cache: 'no-store' })
+  const data: unknown[][] = await res.json()
+  return data.map(parseBarangRow)
 }
 
 export async function getKeluar(type: KeluarType, month?: number, year?: number): Promise<Keluar[]> {

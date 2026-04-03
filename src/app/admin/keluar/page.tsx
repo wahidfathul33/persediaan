@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { getKeluar, getBarang, addKeluar, updateKeluar, deleteKeluar, type Keluar, type Barang, type KeluarType } from '@/lib/api'
+import { getKeluar, getBarangGrouped, addKeluar, updateKeluar, deleteKeluar, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
 
@@ -172,8 +172,8 @@ export default function KeluarPage() {
   const [activeType, setActiveType] = useState<KeluarType>('atk')
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [year, setYear] = useState(now.getFullYear())
-  const [data, setData] = useState<Keluar[]>([])
-  const [barangList, setBarangList] = useState<Barang[]>([])
+  const [allKeluar, setAllKeluar] = useState<Record<KeluarType, Keluar[]>>({ atk: [], rt: [], obat: [] })
+  const [barangGrouped, setBarangGrouped] = useState<BarangGrouped>({ atk: [], rt: [], obat: [] })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -185,22 +185,24 @@ export default function KeluarPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [page, setPage] = useState(1)
 
-  useEffect(() => {
-    getBarang().then(setBarangList).catch(() => {})
-  }, [])
-
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const keluar = await getKeluar(activeType, month, year)
-      setData(keluar)
+      const [atkData, rtData, obatData, grouped] = await Promise.all([
+        getKeluar('atk', month, year),
+        getKeluar('rt', month, year),
+        getKeluar('obat', month, year),
+        getBarangGrouped(),
+      ])
+      setAllKeluar({ atk: atkData, rt: rtData, obat: obatData })
+      setBarangGrouped(grouped)
     } catch {
       setError('Gagal memuat data.')
     } finally {
       setLoading(false)
     }
-  }, [activeType, month, year])
+  }, [month, year])
 
   useEffect(() => { setPage(1); load() }, [load])
 
@@ -267,7 +269,6 @@ export default function KeluarPage() {
       }
       setModalOpen(false)
       await load()
-      getBarang().then(setBarangList).catch(() => {})
     } catch {
       alert('Gagal menyimpan data.')
     } finally {
@@ -282,7 +283,6 @@ export default function KeluarPage() {
       await deleteKeluar(activeType, deleteId)
       setDeleteId(null)
       await load()
-      getBarang().then(setBarangList).catch(() => {})
     } catch {
       alert('Gagal menghapus data.')
     } finally {
@@ -294,6 +294,7 @@ export default function KeluarPage() {
 
   useEffect(() => { setPage(1) }, [search])
 
+  const data = allKeluar[activeType]
   const filtered = data.filter((d) => {
     const q = search.toLowerCase()
     return (
@@ -335,6 +336,11 @@ export default function KeluarPage() {
             }`}
           >
             {t.label}
+            {!loading && (
+              <span className="ml-1.5 text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">
+                {allKeluar[t.value].length}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -496,7 +502,7 @@ export default function KeluarPage() {
                 key={i}
                 index={i}
                 item={item}
-                barangList={barangList}
+                barangList={barangGrouped[activeType]}
                 onChange={(updates) => updateItem(i, updates)}
                 onRemove={() => removeItem(i)}
                 canRemove={items.length > 1}

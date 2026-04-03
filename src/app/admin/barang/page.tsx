@@ -1,33 +1,40 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { getBarang, type Barang } from '@/lib/api'
+import { useCallback, useEffect, useState } from 'react'
+import { getBarangGrouped, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 
 const PAGE_SIZE = 10
 
+const TABS: { value: KeluarType; label: string }[] = [
+  { value: 'atk', label: 'ATK' },
+  { value: 'rt', label: 'Rumah Tangga' },
+  { value: 'obat', label: 'Obat' },
+]
+
 export default function BarangPage() {
-  const [data, setData] = useState<Barang[]>([])
+  const [grouped, setGrouped] = useState<BarangGrouped>({ atk: [], rt: [], obat: [] })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [activeTab, setActiveTab] = useState<KeluarType>('atk')
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
 
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const result = await getBarang()
-      setData(result)
+      setGrouped(await getBarangGrouped())
     } catch {
       setError('Gagal memuat data barang.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  useEffect(() => { load() }, [])
-  useEffect(() => { setPage(1) }, [search])
+  useEffect(() => { load() }, [load])
+  useEffect(() => { setPage(1) }, [search, activeTab])
 
+  const data: Barang[] = grouped[activeTab]
   const q = search.toLowerCase()
   const filtered = data.filter(
     (b) =>
@@ -50,6 +57,28 @@ export default function BarangPage() {
         >
           🔄 Refresh
         </button>
+      </div>
+
+      {/* Type tabs */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200">
+        {TABS.map((t) => (
+          <button
+            key={t.value}
+            onClick={() => { setActiveTab(t.value); setSearch('') }}
+            className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors ${
+              activeTab === t.value
+                ? 'border-blue-500 text-blue-600 bg-blue-50'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {t.label}
+            {!loading && (
+              <span className="ml-1.5 text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">
+                {grouped[t.value].length}
+              </span>
+            )}
+          </button>
+        ))}
       </div>
 
       <div className="bg-white rounded-xl shadow border border-gray-200">
@@ -161,3 +190,4 @@ export default function BarangPage() {
     </div>
   )
 }
+
