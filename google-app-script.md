@@ -4,7 +4,10 @@
 
 const ss = SpreadsheetApp.getActiveSpreadsheet()
 
-const sheetBarang     = ss.getSheetByName("List Barang")
+const sheetBarangATK  = ss.getSheetByName("Barang ATK")
+const sheetBarangRT   = ss.getSheetByName("Barang RT")
+const sheetBarangObat = ss.getSheetByName("Barang Obat")
+
 const sheetKeluarATK  = ss.getSheetByName("Keluar ATK")
 const sheetKeluarRT   = ss.getSheetByName("Keluar RT")
 const sheetKeluarObat = ss.getSheetByName("Keluar Obat")
@@ -18,6 +21,13 @@ function getKeluarSheet(type) {
   return null
 }
 
+function getBarangSheet(type) {
+  if (type == "atk")  return sheetBarangATK
+  if (type == "rt")   return sheetBarangRT
+  if (type == "obat") return sheetBarangObat
+  return null
+}
+
 function getKeluarPrefix(type) {
   if (type == "atk")  return "ATK"
   if (type == "rt")   return "RT"
@@ -25,8 +35,11 @@ function getKeluarPrefix(type) {
   return "DB"
 }
 
-// Hitung ulang dan simpan Sisa Saldo di List Barang untuk id_barang tertentu
-function updateSisaSaldoBarang(id_barang) {
+// Hitung ulang dan simpan Sisa Saldo di sheet Barang yang sesuai untuk id_barang tertentu
+function updateSisaSaldoBarang(id_barang, type) {
+
+  const sheetBarang = getBarangSheet(type)
+  if (!sheetBarang) return 0
 
   const barangRows = sheetBarang.getDataRange().getValues()
   let saldoAwal    = 0
@@ -42,14 +55,14 @@ function updateSisaSaldoBarang(id_barang) {
 
   if (barangRowNum == -1) return 0
 
+  // Hitung total keluar hanya dari sheet keluar yang sesuai dengan type
+  const keluarSheet = getKeluarSheet(type)
   let totalKeluar = 0
-  ;[sheetKeluarATK, sheetKeluarRT, sheetKeluarObat].forEach(function(sheet) {
-    const rows = sheet.getDataRange().getValues()
-    rows.slice(1).forEach(function(r) {
-      if (String(r[1]) == String(id_barang)) {
-        totalKeluar += Number(r[7])
-      }
-    })
+  const rows = keluarSheet.getDataRange().getValues()
+  rows.slice(1).forEach(function(r) {
+    if (String(r[1]) == String(id_barang)) {
+      totalKeluar += Number(r[7])
+    }
   })
 
   const sisaSaldo = saldoAwal - totalKeluar
@@ -67,13 +80,27 @@ function doGet(e) {
   const month  = e.parameter.month
   const year   = e.parameter.year
 
-  if (action == "barang") return getBarang()
+  if (action == "barang") return getBarang(type)
   if (action == "keluar") return getKeluar(type, month, year)
   if (action == "stok")   return getStok(month, year)
 
 }
 
-function getBarang() {
+function getBarang(type) {
+
+  const sheetBarang = getBarangSheet(type)
+  if (!sheetBarang) {
+    // Jika tidak ada type, gabungkan semua sheet barang
+    const allData = []
+    ;[sheetBarangATK, sheetBarangRT, sheetBarangObat].forEach(function(sheet) {
+      const data = sheet.getDataRange().getValues()
+      data.shift()
+      allData.push.apply(allData, data)
+    })
+    return ContentService
+      .createTextOutput(JSON.stringify(allData))
+      .setMimeType(ContentService.MimeType.JSON)
+  }
 
   const data = sheetBarang.getDataRange().getValues()
   data.shift()
@@ -118,12 +145,15 @@ function rolloverSaldo(secret) {
   const ROLLOVER_SECRET = PropertiesService.getScriptProperties().getProperty('ROLLOVER_SECRET')
   if (!ROLLOVER_SECRET || secret !== ROLLOVER_SECRET) return false
 
-  const rows = sheetBarang.getDataRange().getValues()
-  // Mulai dari baris 2 (index 1) untuk melewati header
-  for (let i = 1; i < rows.length; i++) {
-    const sisaSaldo = Number(rows[i][6]) // kolom G (index 6) = sisa_saldo
-    sheetBarang.getRange(i + 1, 6).setValue(sisaSaldo) // kolom F (index 6 di getRange = 1-based 6) = saldo_awal
-  }
+  // Rollover semua sheet barang
+  ;[sheetBarangATK, sheetBarangRT, sheetBarangObat].forEach(function(sheetBarang) {
+    const rows = sheetBarang.getDataRange().getValues()
+    // Mulai dari baris 2 (index 1) untuk melewati header
+    for (let i = 1; i < rows.length; i++) {
+      const sisaSaldo = Number(rows[i][6]) // kolom G (index 6) = sisa_saldo
+      sheetBarang.getRange(i + 1, 6).setValue(sisaSaldo) // kolom F = saldo_awal
+    }
+  })
 
   return true
 
@@ -146,6 +176,7 @@ function doPost(e) {
   }
 
   const sheet = getKeluarSheet(type)
+  const sheetBarang = getBarangSheet(type)
 
   // ── ADD ──────────────────────────────────────────────────────────────────
   if (action == "add") {
@@ -154,7 +185,7 @@ function doPost(e) {
     const prefix  = getKeluarPrefix(type)
     const id      = prefix + "-" + String(lastRow).padStart(4, "0")
 
-    // Baca Sisa Saldo saat ini dari List Barang
+    // Baca Sisa Saldo saat ini dari sheet Barang yang sesuai
     const barangRows = sheetBarang.getDataRange().getValues()
     let sisaSaldoBarang = 0
     for (let i = 1; i < barangRows.length; i++) {
@@ -172,7 +203,7 @@ function doPost(e) {
       sisaSaldoRow, data.keterangan
     ])
 
-    updateSisaSaldoBarang(data.id_barang)
+    updateSisaSaldoBarang(data.id_barang, type)
 
   }
 
@@ -194,8 +225,8 @@ function doPost(e) {
       }
     }
 
-    // Hitung ulang sisa saldo di List Barang
-    const newSisaSaldo = updateSisaSaldoBarang(data.id_barang)
+    // Hitung ulang sisa saldo di sheet Barang yang sesuai
+    const newSisaSaldo = updateSisaSaldoBarang(data.id_barang, type)
 
     // Update kolom Sisa Saldo (kolom 9) pada baris yang baru diupdate
     const updatedRows = sheet.getDataRange().getValues()
@@ -208,7 +239,7 @@ function doPost(e) {
 
     // Jika id_barang berubah, perbarui juga saldo barang lama
     if (oldIdBarang && oldIdBarang !== String(data.id_barang)) {
-      updateSisaSaldoBarang(oldIdBarang)
+      updateSisaSaldoBarang(oldIdBarang, type)
     }
 
   }
@@ -226,7 +257,7 @@ function doPost(e) {
       }
     }
 
-    if (id_barang) updateSisaSaldoBarang(id_barang)
+    if (id_barang) updateSisaSaldoBarang(id_barang, type)
 
   }
 
@@ -246,8 +277,12 @@ function getStok(month, year) {
   // Jumlah hari di bulan tersebut
   const daysInMonth = new Date(year, month, 0).getDate()
 
-  const barangRows = sheetBarang.getDataRange().getValues()
-  const barangData = barangRows.slice(1)
+  // Gabungkan semua data barang dari ketiga sheet
+  const barangData = []
+  ;[sheetBarangATK, sheetBarangRT, sheetBarangObat].forEach(function(sheet) {
+    const rows = sheet.getDataRange().getValues()
+    rows.slice(1).forEach(function(r) { barangData.push(r) })
+  })
 
   // Kumpulkan keluar per id_barang per hari untuk bulan & tahun ini
   const keluarByBarang = {}

@@ -59,8 +59,9 @@ async function apiFetch(input: RequestInfo, init?: RequestInit) {
   return res
 }
 
-export async function getBarang(): Promise<Barang[]> {
-  const res = await apiFetch(`${BASE_URL}?action=barang`, { cache: 'no-store' })
+export async function getBarang(type?: KeluarType): Promise<Barang[]> {
+  const url = type ? `${BASE_URL}?action=barang&type=${type}` : `${BASE_URL}?action=barang`
+  const res = await apiFetch(url, { cache: 'no-store' })
   const data: unknown[][] = await res.json()
   return data.map((r) => ({
     id: String(r[0]),
