@@ -125,6 +125,14 @@ export async function addKeluar(type: KeluarType, payload: Omit<Keluar, 'id' | '
   await postJSON({ ...payload, type, action: 'add' })
 }
 
+export async function addKeluarBatch(type: KeluarType, items: Omit<Keluar, 'id' | 'sisa_saldo'>[]): Promise<void> {
+  if (items.length === 1) {
+    await addKeluar(type, items[0])
+    return
+  }
+  await postJSON({ items, type, action: 'addBatch' })
+}
+
 export async function updateKeluar(type: KeluarType, payload: Omit<Keluar, 'sisa_saldo'>): Promise<void> {
   await postJSON({ ...payload, type, action: 'update' })
 }

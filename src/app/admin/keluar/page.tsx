@@ -1,7 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
-import { getKeluar, getBarangGrouped, addKeluar, updateKeluar, deleteKeluar, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { getKeluar, getBarangGrouped, addKeluarBatch, updateKeluar, deleteKeluar, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
 import Toast from '@/components/Toast'
@@ -43,10 +43,10 @@ interface ItemRowProps {
 }
 
 function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, errors }: ItemRowProps) {
-  const barangOptions = barangList.map((b) => ({
+  const barangOptions = useMemo(() => barangList.map((b) => ({
     value: b.id,
     label: b.nama_barang,
-  }))
+  })), [barangList])
 
   const selectedBarang = barangList.find((b) => b.id === item.id_barang)
 
@@ -254,9 +254,7 @@ export default function KeluarPage() {
       if (editId) {
         await updateKeluar(activeType, { ...items[0], id: editId })
       } else {
-        for (const item of items) {
-          await addKeluar(activeType, item)
-        }
+        await addKeluarBatch(activeType, items)
       }
       setModalOpen(false)
       await load()

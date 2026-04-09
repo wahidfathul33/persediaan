@@ -207,6 +207,44 @@ function doPost(e) {
 
   }
 
+  // ── ADD BATCH ─────────────────────────────────────────────────────────────
+  if (action == "addBatch") {
+
+    const items = data.items  // array of item objects
+    const prefix = getKeluarPrefix(type)
+    const barangRows = sheetBarang.getDataRange().getValues()
+
+    items.forEach(function(item) {
+      const lastRow = sheet.getLastRow()
+      const id = prefix + "-" + String(lastRow).padStart(4, "0")
+
+      let sisaSaldoBarang = 0
+      for (let i = 1; i < barangRows.length; i++) {
+        if (String(barangRows[i][0]) == String(item.id_barang)) {
+          sisaSaldoBarang = Number(barangRows[i][6])
+          break
+        }
+      }
+
+      const sisaSaldoRow = sisaSaldoBarang - Number(item.qty)
+
+      sheet.appendRow([
+        id, item.id_barang, item.kode_barang, item.nama_barang,
+        item.merk, item.satuan, item.tanggal, item.qty,
+        sisaSaldoRow, item.keterangan
+      ])
+    })
+
+    // Recalculate sisa saldo for each unique barang affected
+    const uniqueIds = items
+      .map(function(item) { return item.id_barang })
+      .filter(function(id, idx, arr) { return arr.indexOf(id) === idx })
+    uniqueIds.forEach(function(id_barang) {
+      updateSisaSaldoBarang(id_barang, type)
+    })
+
+  }
+
   // ── UPDATE ────────────────────────────────────────────────────────────────
   if (action == "update") {
 

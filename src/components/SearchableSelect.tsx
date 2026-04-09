@@ -1,7 +1,7 @@
 'use client'
 
 import { createPortal } from 'react-dom'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 export interface SelectOption {
   value: string
@@ -38,9 +38,12 @@ export default function SearchableSelect({
   useEffect(() => { setMounted(true) }, [])
 
   const selected = options.find((o) => o.value === value)
-  const filtered = !search
+  const MAX_VISIBLE = 50
+  const allFiltered = !search
     ? options
     : options.filter((o) => o.label.toLowerCase().includes(search.toLowerCase()))
+  const filtered = useMemo(() => allFiltered.slice(0, MAX_VISIBLE), [allFiltered])
+  const hasMore = allFiltered.length > MAX_VISIBLE
 
   // Close on outside click (exclude both trigger and portal dropdown)
   useEffect(() => {
@@ -172,21 +175,28 @@ export default function SearchableSelect({
                   Tidak ditemukan
                 </div>
               ) : (
-                filtered.map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => handleSelect(opt.value)}
-                    className={`w-full text-left px-3 py-2 text-sm transition-colors ${
-                      opt.value === value
-                        ? 'bg-blue-50 text-blue-700 font-medium'
-                        : 'text-gray-700 hover:bg-gray-50'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))
+                <>
+                  {filtered.map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => handleSelect(opt.value)}
+                      className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                        opt.value === value
+                          ? 'bg-blue-50 text-blue-700 font-medium'
+                          : 'text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                  {hasMore && (
+                    <div className="px-3 py-2 text-xs text-gray-400 text-center border-t border-gray-100">
+                      Ketik untuk mencari dari {allFiltered.length} data...
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>,

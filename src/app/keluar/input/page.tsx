@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { getBarangGrouped, addKeluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getBarangGrouped, addKeluarBatch, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import SearchableSelect from '@/components/SearchableSelect'
 import Toast from '@/components/Toast'
 
@@ -51,10 +51,10 @@ interface ItemRowProps {
 }
 
 function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, errors }: ItemRowProps) {
-  const barangOptions = barangList.map((b) => ({
+  const barangOptions = useMemo(() => barangList.map((b) => ({
     value: b.id,
     label: b.nama_barang,
-  }))
+  })), [barangList])
 
   const selectedBarang = barangList.find((b) => b.id === item.id_barang)
 
@@ -217,9 +217,7 @@ export default function KeluarInputPage() {
     setSaving(true)
     setSubmitError('')
     try {
-      for (const item of items) {
-        await addKeluar(selectedType, item)
-      }
+      await addKeluarBatch(selectedType, items)
       setSuccess(true)
     } catch {
       setSubmitError('Gagal menyimpan data. Periksa koneksi dan coba lagi.')
