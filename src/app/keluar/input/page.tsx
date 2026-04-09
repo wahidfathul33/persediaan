@@ -22,7 +22,7 @@ type ItemForm = {
   keterangan: string
 }
 
-type ItemErrors = Partial<Record<'nama_barang' | 'merk' | 'tanggal' | 'qty', string>>
+type ItemErrors = Partial<Record<'nama_barang' | 'tanggal' | 'qty', string>>
 
 function makeItem(): ItemForm {
   return {
@@ -50,28 +50,20 @@ interface ItemRowProps {
 }
 
 function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, errors }: ItemRowProps) {
-  const namaOptions = [...new Map(
-    barangList.map((b) => [b.nama_barang, { value: b.nama_barang, label: b.nama_barang }])
-  ).values()]
-
-  const merkOptions = barangList
-    .filter((b) => b.nama_barang === item.nama_barang)
-    .reduce<{ value: string; label: string }[]>((acc, b) => {
-      if (!acc.find((x) => x.value === b.merk)) acc.push({ value: b.merk, label: b.merk })
-      return acc
-    }, [])
+  const barangOptions = barangList.map((b) => ({
+    value: b.id,
+    label: b.nama_barang,
+  }))
 
   const selectedBarang = barangList.find((b) => b.id === item.id_barang)
 
-  function handleNama(nama: string) {
-    onChange({ nama_barang: nama, merk: '', id_barang: '', kode_barang: '', satuan: '' })
-  }
-
-  function handleMerk(merk: string) {
-    if (!merk) { onChange({ merk: '', id_barang: '', kode_barang: '', satuan: '' }); return }
-    const b = barangList.find((x) => x.nama_barang === item.nama_barang && x.merk === merk)
-    if (b) onChange({ merk, id_barang: b.id, kode_barang: b.kode_barang, satuan: b.satuan })
-    else onChange({ merk })
+  function handleBarang(id: string) {
+    if (!id) {
+      onChange({ id_barang: '', kode_barang: '', nama_barang: '', merk: '', satuan: '' })
+      return
+    }
+    const b = barangList.find((x) => x.id === id)
+    if (b) onChange({ id_barang: b.id, kode_barang: b.kode_barang, nama_barang: b.nama_barang, merk: b.merk, satuan: b.satuan })
   }
 
   return (
@@ -94,13 +86,13 @@ function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, error
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">
-            Nama Barang <span className="text-red-500">*</span>
+            Barang <span className="text-red-500">*</span>
           </label>
           <SearchableSelect
-            options={namaOptions}
-            value={item.nama_barang}
-            onChange={handleNama}
-            placeholder="Pilih nama..."
+            options={barangOptions}
+            value={item.id_barang}
+            onChange={handleBarang}
+            placeholder="Pilih barang..."
             ring="orange"
             error={!!errors.nama_barang}
           />
@@ -108,19 +100,14 @@ function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, error
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">
-            Merk <span className="text-red-500">*</span>
-          </label>
-          <SearchableSelect
-            options={merkOptions}
+          <label className="block text-xs font-medium text-gray-600 mb-1">Merk</label>
+          <input
+            type="text"
             value={item.merk}
-            onChange={handleMerk}
-            placeholder="Pilih merk..."
-            disabled={!item.nama_barang}
-            ring="orange"
-            error={!!errors.merk}
+            disabled
+            placeholder="-"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-100 text-gray-500 cursor-not-allowed"
           />
-          {errors.merk && <p className="text-red-500 text-xs mt-1">{errors.merk}</p>}
         </div>
 
         <div>
@@ -140,15 +127,15 @@ function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, error
           <label className="block text-xs font-medium text-gray-600 mb-1">
             Jumlah Keluar <span className="text-red-500">*</span>
           </label>
-          <div className="flex items-center gap-1.5">
+          <div className={`flex rounded-lg overflow-hidden border ${errors.qty ? 'border-red-400' : 'border-gray-300'} focus-within:ring-2 focus-within:ring-orange-400`}>
             <input
               type="number"
               min={1}
               value={item.qty}
               onChange={(e) => onChange({ qty: Number(e.target.value) })}
-              className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 ${errors.qty ? 'border-red-400' : 'border-gray-300'}`}
+              className="w-full px-3 py-2 text-sm focus:outline-none bg-white"
             />
-            <span className="text-xs text-gray-600 bg-gray-200 px-2 py-2 rounded whitespace-nowrap min-w-[2.5rem] text-center">
+            <span className="flex items-center px-3 py-2 text-sm text-gray-500 bg-gray-100 border-l border-gray-300 whitespace-nowrap">
               {item.satuan || '-'}
             </span>
           </div>
@@ -210,8 +197,7 @@ export default function KeluarInputPage() {
     let valid = true
     const newErrors: ItemErrors[] = items.map((item) => {
       const err: ItemErrors = {}
-      if (!item.nama_barang) { err.nama_barang = 'Nama barang wajib diisi'; valid = false }
-      if (!item.merk) { err.merk = 'Merk wajib diisi'; valid = false }
+      if (!item.id_barang) { err.nama_barang = 'Barang wajib dipilih'; valid = false }
       if (!item.tanggal) { err.tanggal = 'Tanggal wajib diisi'; valid = false }
       if (!item.qty || item.qty < 1) { err.qty = 'Qty minimal 1'; valid = false }
       return err
