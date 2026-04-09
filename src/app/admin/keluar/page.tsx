@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { getKeluar, getBarangGrouped, addKeluar, updateKeluar, deleteKeluar, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
+import Toast from '@/components/Toast'
 
 const TYPES: { value: KeluarType; label: string }[] = [
   { value: 'atk', label: 'ATK' },
@@ -171,6 +172,7 @@ export default function KeluarPage() {
   const [itemErrors, setItemErrors] = useState<ItemErrors[]>([{}])
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [page, setPage] = useState(1)
+  const [toast, setToast] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -243,7 +245,10 @@ export default function KeluarPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!validate()) return
+    if (!validate()) {
+      setToast('Harap lengkapi semua field yang wajib diisi.')
+      return
+    }
     setSaving(true)
     try {
       if (editId) {
@@ -538,6 +543,7 @@ export default function KeluarPage() {
           </div>
         </Modal>
       )}
+      {toast && <Toast message={toast} type="error" onClose={() => setToast('')} />}
     </div>
   )
 }

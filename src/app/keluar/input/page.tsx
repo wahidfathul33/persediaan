@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { getBarangGrouped, addKeluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import SearchableSelect from '@/components/SearchableSelect'
+import Toast from '@/components/Toast'
 
 const TYPES: { value: KeluarType; label: string; desc: string; color: string }[] = [
   { value: 'atk', label: 'ATK', desc: 'Alat Tulis Kantor', color: 'border-blue-400 bg-blue-50 text-blue-700 hover:bg-blue-100' },
@@ -171,6 +172,7 @@ export default function KeluarInputPage() {
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState(false)
   const [submitError, setSubmitError] = useState('')
+  const [toast, setToast] = useState('')
 
   useEffect(() => {
     getBarangGrouped()
@@ -208,7 +210,10 @@ export default function KeluarInputPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!validate() || !selectedType) return
+    if (!validate() || !selectedType) {
+      setToast('Harap lengkapi semua field yang wajib diisi.')
+      return
+    }
     setSaving(true)
     setSubmitError('')
     try {
@@ -353,6 +358,7 @@ export default function KeluarInputPage() {
           </button>
         </form>
       )}
+      {toast && <Toast message={toast} type="error" onClose={() => setToast('')} />}
     </div>
   )
 }
