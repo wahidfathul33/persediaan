@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { getBarangGrouped, addKeluarBatch, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getBarangGrouped, addKeluarBatch, pingAPI, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import SearchableSelect from '@/components/SearchableSelect'
 import Toast from '@/components/Toast'
 
@@ -178,6 +178,9 @@ export default function KeluarInputPage() {
     getBarangGrouped()
       .then(setBarangGrouped)
       .finally(() => setBarangLoading(false))
+    // Ping setiap 4 menit untuk mencegah GAS cold start
+    const interval = setInterval(pingAPI, 4 * 60 * 1000)
+    return () => clearInterval(interval)
   }, [])
 
   function updateItem(index: number, updates: Partial<ItemForm>) {

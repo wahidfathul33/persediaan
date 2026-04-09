@@ -77,6 +77,14 @@ function parseBarangRow(r: unknown[]): Barang {
   }
 }
 
+export async function pingAPI(): Promise<void> {
+  try {
+    await fetch(`${BASE_URL}?action=ping`, { cache: 'no-store' })
+  } catch {
+    // ignore — fire and forget
+  }
+}
+
 export async function getBarangGrouped(): Promise<BarangGrouped> {
   const res = await apiFetch(`${BASE_URL}?action=barang`, { cache: 'no-store' })
   const data: Record<KeluarType, unknown[][]> = await res.json()

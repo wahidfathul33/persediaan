@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { getKeluar, getBarangGrouped, addKeluarBatch, updateKeluar, deleteKeluar, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getKeluar, getBarangGrouped, addKeluarBatch, updateKeluar, deleteKeluar, pingAPI, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
 import Toast from '@/components/Toast'
@@ -195,11 +195,18 @@ export default function KeluarPage() {
 
   useEffect(() => { setPage(1); load() }, [load])
 
+  // Ping setiap 4 menit untuk mencegah GAS cold start
+  useEffect(() => {
+    const interval = setInterval(pingAPI, 4 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [])
+
   function openAdd() {
     setEditId(null)
     setItems([makeItem()])
     setItemErrors([{}])
     setModalOpen(true)
+    pingAPI()
   }
 
   function openEdit(row: Keluar) {
@@ -209,6 +216,7 @@ export default function KeluarPage() {
     setItems([rest])
     setItemErrors([{}])
     setModalOpen(true)
+    pingAPI()
   }
 
   function updateItem(index: number, updates: Partial<ItemForm>) {
