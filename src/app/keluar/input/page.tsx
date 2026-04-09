@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { getBarangGrouped, addKeluarBatch, pingAPI, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import SearchableSelect from '@/components/SearchableSelect'
@@ -173,6 +173,20 @@ export default function KeluarInputPage() {
   const [success, setSuccess] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [toast, setToast] = useState('')
+  const newItemRef = useRef<HTMLDivElement>(null)
+  const actionsRef = useRef<HTMLDivElement>(null)
+  const [isSticky, setIsSticky] = useState(false)
+
+  useEffect(() => {
+    const el = actionsRef.current
+    if (!el) return
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsSticky(!entry.isIntersecting),
+      { threshold: 0 }
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [actionsRef.current])
 
   useEffect(() => {
     getBarangGrouped()
@@ -191,6 +205,7 @@ export default function KeluarInputPage() {
   function addItem() {
     setItems((prev) => [...prev, makeItem()])
     setItemErrors((prev) => [...prev, {}])
+    setTimeout(() => newItemRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
   }
 
   function removeItem(index: number) {
@@ -322,7 +337,8 @@ export default function KeluarInputPage() {
           Memuat data barang...
         </div>
       ) : (
-        <form onSubmit={handleSubmit} className="space-y-4">
+      <>
+      <form id="keluar-form" onSubmit={handleSubmit} className="space-y-4">
           {items.map((item, i) => (
             <ItemRow
               key={i}
@@ -335,14 +351,7 @@ export default function KeluarInputPage() {
               errors={itemErrors[i] ?? {}}
             />
           ))}
-
-          <button
-            type="button"
-            onClick={addItem}
-            className="w-full border-2 border-dashed border-orange-300 text-orange-500 rounded-xl py-3 text-sm font-medium hover:border-orange-400 hover:bg-orange-50 transition-colors"
-          >
-            + Tambah Item
-          </button>
+          <div ref={newItemRef} />
 
           {submitError && (
             <div className="bg-red-50 border border-red-200 text-red-600 text-sm rounded-xl px-4 py-3">
@@ -350,14 +359,48 @@ export default function KeluarInputPage() {
             </div>
           )}
 
-          <button
-            type="submit"
-            disabled={saving}
-            className="w-full bg-orange-500 text-white py-3 rounded-xl font-semibold text-base hover:bg-orange-600 disabled:opacity-50 transition-colors shadow-sm"
-          >
-            {saving ? 'Menyimpan...' : `Simpan${items.length > 1 ? ` (${items.length} item)` : ''}`}
-          </button>
+          {/* Inline action buttons — observed for sticky trigger */}
+          <div ref={actionsRef} className="space-y-3">
+            <button
+              type="button"
+              onClick={addItem}
+              className="w-full border-2 border-dashed border-orange-300 text-orange-500 rounded-xl py-3 text-sm font-medium hover:border-orange-400 hover:bg-orange-50 transition-colors"
+            >
+              + Tambah Item
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="w-full bg-orange-500 text-white py-3 rounded-xl font-semibold text-base hover:bg-orange-600 disabled:opacity-50 transition-colors shadow-sm"
+            >
+              {saving ? 'Menyimpan...' : `Simpan${items.length > 1 ? ` (${items.length} item)` : ''}`}
+            </button>
+          </div>
         </form>
+
+      {/* Sticky bar — hanya muncul saat tombol inline tidak terlihat */}
+      {isSticky && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white px-4 py-3">
+          <div className="max-w-7xl mx-auto space-y-3">
+            <button
+              type="button"
+              onClick={addItem}
+              className="w-full border-2 border-dashed border-orange-300 text-orange-500 rounded-xl py-3 text-sm font-medium hover:border-orange-400 hover:bg-orange-50 transition-colors"
+            >
+              + Tambah Item
+            </button>
+            <button
+              type="submit"
+              form="keluar-form"
+              disabled={saving}
+              className="w-full bg-orange-500 text-white py-3 rounded-xl font-semibold text-base hover:bg-orange-600 disabled:opacity-50 transition-colors shadow-sm"
+            >
+              {saving ? 'Menyimpan...' : `Simpan${items.length > 1 ? ` (${items.length} item)` : ''}`}
+            </button>
+          </div>
+        </div>
+      )}
+      </>
       )}
       {toast && <Toast message={toast} type="error" onClose={() => setToast('')} />}
     </div>
