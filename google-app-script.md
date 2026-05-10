@@ -24,7 +24,7 @@ const SHEETS = {
   },
 }
 
-const PREFIX = { atk: "ATK", rt: "RT", obat: "OBT" }
+const TYPE_LABEL = { atk: "ATK", rt: "RT", obat: "OBT" }
 
 // ── Data Access ───────────────────────────────────────────────────────────────
 
@@ -224,8 +224,8 @@ function doPost(e) {
   const isBarang = action == "addBarang" || action == "updateBarang" || action == "deleteBarang"
   // Route masuk actions to masuk sheet
   const isMasuk = action == "addMasuk" || action == "addMasukBatch" || action == "updateMasuk" || action == "deleteMasuk"
-  const sheet  = isMasuk ? getMasukSheet(type) : isBarang ? null : getKeluarSheet(type)
-  const prefix = PREFIX[type] || "DB"
+  const sheet     = isMasuk ? getMasukSheet(type) : isBarang ? null : getKeluarSheet(type)
+  const typeLabel = TYPE_LABEL[type] || type.toUpperCase()
 
   // LockService: prevent race conditions on concurrent stok updates
   const lock = LockService.getScriptLock()
@@ -242,7 +242,7 @@ function doPost(e) {
       const t = _t("add")
 
       const lastRow    = sheet.getLastRow()
-      const id         = prefix + "-" + String(lastRow).padStart(4, "0")
+      const id         = "DB-" + typeLabel + "-" + String(lastRow).padStart(4, "0")
       const barangRows = readRows(getBarangSheet(type))       // 1x read
       const barangMap  = buildBarangMap(barangRows)           // O(1) map
       const entry      = barangMap[String(data.id_barang)]
@@ -276,7 +276,7 @@ function doPost(e) {
       let   nextRowNum = sheet.getLastRow() + 1
 
       data.items.forEach(function(item) {
-        const id  = prefix + "-" + String(nextRowNum - 1).padStart(4, "0")
+        const id  = "DB-" + typeLabel + "-" + String(nextRowNum - 1).padStart(4, "0")
         const idB = String(item.id_barang)
         const qty = Number(item.qty)
 
@@ -382,7 +382,7 @@ function doPost(e) {
       const t = _t("addMasuk")
 
       const lastRow    = sheet.getLastRow()
-      const id         = prefix + "-M-" + String(lastRow).padStart(4, "0")
+      const id         = "CR-" + typeLabel + "-" + String(lastRow).padStart(4, "0")
       const barangRows = readRows(getBarangSheet(type))
       const barangMap  = buildBarangMap(barangRows)
       const entry      = barangMap[String(data.id_barang)]
@@ -415,7 +415,7 @@ function doPost(e) {
       let   nextRowNum = sheet.getLastRow() + 1
 
       data.items.forEach(function(item) {
-        const id  = prefix + "-M-" + String(nextRowNum - 1).padStart(4, "0")
+        const id  = "CR-" + typeLabel + "-" + String(nextRowNum - 1).padStart(4, "0")
         const idB = String(item.id_barang)
         const qty = Number(item.qty)
 
@@ -516,7 +516,7 @@ function doPost(e) {
 
       const bSheet  = getBarangSheet(type)
       const lastRow = bSheet.getLastRow()
-      const id      = prefix + "-" + String(lastRow).padStart(4, "0")
+      const id      = "BR-" + typeLabel + "-" + String(lastRow).padStart(4, "0")
 
       bSheet.appendRow([
         id,
