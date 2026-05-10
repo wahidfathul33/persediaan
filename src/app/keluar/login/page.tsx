@@ -40,9 +40,13 @@ function LoginForm() {
     <div className="flex items-center justify-center px-4 mt-20">
       <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-8 w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="text-4xl mb-3">📦</div>
-          <h1 className="text-xl font-bold text-gray-800">Persediaan SDMK</h1>
-          <p className="text-sm text-gray-500 mt-1">Masukkan password untuk mencatat barang keluar</p>
+            <img
+              src="/header_sdmk.svg"
+              alt="SDMK"
+              className="h-9 w-auto mx-auto block"
+            />
+           <h1 className="text-xl font-bold text-gray-800 mt-4">Persediaan SDMK</h1>
+           <p className="text-sm text-gray-500 mt-1">Masukkan password untuk mencatat barang keluar</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
