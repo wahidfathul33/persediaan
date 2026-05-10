@@ -1,7 +1,9 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { getBarangGrouped, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getBarangGrouped, addBarang, updateBarang, deleteBarang, pingAPI, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import Modal from '@/components/Modal'
+import Toast from '@/components/Toast'
 
 const PAGE_SIZE = 10
 
@@ -11,6 +13,13 @@ const TABS: { value: KeluarType; label: string }[] = [
   { value: 'obat', label: 'Obat' },
 ]
 
+type BarangForm = Omit<Barang, 'id' | 'sisa_saldo'>
+type BarangErrors = Partial<Record<'kode_barang' | 'nama_barang' | 'merk' | 'satuan' | 'saldo_awal', string>>
+
+function makeForm(): BarangForm {
+  return { kode_barang: '', nama_barang: '', merk: '', satuan: '', saldo_awal: 0 }
+}
+
 export default function BarangPage() {
   const [grouped, setGrouped] = useState<BarangGrouped>({ atk: [], rt: [], obat: [] })
   const [loading, setLoading] = useState(true)
@@ -18,6 +27,13 @@ export default function BarangPage() {
   const [activeTab, setActiveTab] = useState<KeluarType>('atk')
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [editId, setEditId] = useState<string | null>(null)
+  const [form, setForm] = useState<BarangForm>(makeForm())
+  const [formErrors, setFormErrors] = useState<BarangErrors>({})
+  const [saving, setSaving] = useState(false)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [toast, setToast] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -33,6 +49,72 @@ export default function BarangPage() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => { setPage(1) }, [search, activeTab])
+
+  useEffect(() => {
+    const interval = setInterval(pingAPI, 4 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [])
+
+  function openAdd() {
+    setEditId(null)
+    setForm(makeForm())
+    setFormErrors({})
+    setModalOpen(true)
+    pingAPI()
+  }
+
+  function openEdit(b: Barang) {
+    setEditId(b.id)
+    setForm({ kode_barang: b.kode_barang, nama_barang: b.nama_barang, merk: b.merk, satuan: b.satuan, saldo_awal: b.saldo_awal })
+    setFormErrors({})
+    setModalOpen(true)
+    pingAPI()
+  }
+
+  function validate(): boolean {
+    const e: BarangErrors = {}
+    if (!form.kode_barang.trim()) e.kode_barang = 'Kode barang wajib diisi'
+    if (!form.nama_barang.trim()) e.nama_barang = 'Nama barang wajib diisi'
+    if (!form.merk.trim()) e.merk = 'Merk wajib diisi'
+    if (!form.satuan.trim()) e.satuan = 'Satuan wajib diisi'
+    if (form.saldo_awal < 0) e.saldo_awal = 'Saldo awal tidak boleh negatif'
+    setFormErrors(e)
+    return Object.keys(e).length === 0
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!validate()) return
+    setSaving(true)
+    try {
+      if (editId) {
+        const existing = grouped[activeTab].find(b => b.id === editId)!
+        await updateBarang(activeTab, { ...form, id: editId, sisa_saldo: existing.sisa_saldo })
+      } else {
+        await addBarang(activeTab, form)
+      }
+      setModalOpen(false)
+      await load()
+    } catch {
+      setToast('Gagal menyimpan data.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!deleteId) return
+    setSaving(true)
+    try {
+      await deleteBarang(activeTab, deleteId)
+      setDeleteId(null)
+      await load()
+    } catch {
+      setToast('Gagal menghapus data.')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const data: Barang[] = grouped[activeTab]
   const q = search.toLowerCase()
@@ -51,12 +133,20 @@ export default function BarangPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Master Barang</h1>
-        <button
-          onClick={load}
-          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors flex items-center gap-2"
-        >
-          🔄 Refresh
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={load}
+            className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors"
+          >
+            🔄 Refresh
+          </button>
+          <button
+            onClick={openAdd}
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+          >
+            + Tambah Barang
+          </button>
+        </div>
       </div>
 
       {/* Type tabs */}
@@ -111,12 +201,13 @@ export default function BarangPage() {
                   <th className="px-4 py-3 text-left">Satuan</th>
                   <th className="px-4 py-3 text-right">Saldo Awal</th>
                   <th className="px-4 py-3 text-right">Sisa Saldo</th>
+                  <th className="px-4 py-3 text-center">Aksi</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="text-center py-10 text-gray-400">
+                    <td colSpan={9} className="text-center py-10 text-gray-400">
                       Tidak ada data barang
                     </td>
                   </tr>
@@ -131,6 +222,12 @@ export default function BarangPage() {
                       <td className="px-4 py-3 text-gray-600">{b.satuan}</td>
                       <td className="px-4 py-3 text-right font-medium text-gray-700">{b.saldo_awal}</td>
                       <td className={`px-4 py-3 text-right font-bold ${b.sisa_saldo <= 0 ? 'text-red-600' : 'text-blue-600'}`}>{b.sisa_saldo}</td>
+                      <td className="px-4 py-3 text-center">
+                        <div className="flex gap-1 justify-center">
+                          <button onClick={() => openEdit(b)} className="text-blue-600 hover:text-blue-800 text-xs px-2 py-1 rounded hover:bg-blue-50">Edit</button>
+                          <button onClick={() => setDeleteId(b.id)} className="text-red-500 hover:text-red-700 text-xs px-2 py-1 rounded hover:bg-red-50">Hapus</button>
+                        </div>
+                      </td>
                     </tr>
                   ))
                 )}
@@ -187,6 +284,121 @@ export default function BarangPage() {
           )}
         </div>
       </div>
+
+      {/* Add/Edit Modal */}
+      {modalOpen && (
+        <Modal
+          title={editId ? `Edit Barang ${TABS.find(t => t.value === activeTab)?.label}` : `Tambah Barang ${TABS.find(t => t.value === activeTab)?.label}`}
+          onClose={() => setModalOpen(false)}
+          size="lg"
+          footer={
+            <div className="flex gap-2 justify-end">
+              <button
+                type="button"
+                onClick={() => setModalOpen(false)}
+                className="border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm hover:bg-gray-50"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                form="barang-modal-form"
+                disabled={saving}
+                className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+              >
+                {saving ? 'Menyimpan...' : editId ? 'Update' : 'Simpan'}
+              </button>
+            </div>
+          }
+        >
+          <form id="barang-modal-form" onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Kode Barang <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={form.kode_barang}
+                  onChange={(e) => setForm((f) => ({ ...f, kode_barang: e.target.value }))}
+                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${formErrors.kode_barang ? 'border-red-400' : 'border-gray-300'}`}
+                  placeholder="Contoh: ATK-001"
+                />
+                {formErrors.kode_barang && <p className="text-red-500 text-xs mt-1">{formErrors.kode_barang}</p>}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Nama Barang <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={form.nama_barang}
+                  onChange={(e) => setForm((f) => ({ ...f, nama_barang: e.target.value }))}
+                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${formErrors.nama_barang ? 'border-red-400' : 'border-gray-300'}`}
+                  placeholder="Nama barang"
+                />
+                {formErrors.nama_barang && <p className="text-red-500 text-xs mt-1">{formErrors.nama_barang}</p>}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Merk <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={form.merk}
+                  onChange={(e) => setForm((f) => ({ ...f, merk: e.target.value }))}
+                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${formErrors.merk ? 'border-red-400' : 'border-gray-300'}`}
+                  placeholder="Merk / tipe"
+                />
+                {formErrors.merk && <p className="text-red-500 text-xs mt-1">{formErrors.merk}</p>}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Satuan <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={form.satuan}
+                  onChange={(e) => setForm((f) => ({ ...f, satuan: e.target.value }))}
+                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${formErrors.satuan ? 'border-red-400' : 'border-gray-300'}`}
+                  placeholder="Pcs, Rim, Botol, ..."
+                />
+                {formErrors.satuan && <p className="text-red-500 text-xs mt-1">{formErrors.satuan}</p>}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">
+                  Saldo Awal <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={form.saldo_awal}
+                  onChange={(e) => setForm((f) => ({ ...f, saldo_awal: Number(e.target.value) }))}
+                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${formErrors.saldo_awal ? 'border-red-400' : 'border-gray-300'}`}
+                />
+                {formErrors.saldo_awal && <p className="text-red-500 text-xs mt-1">{formErrors.saldo_awal}</p>}
+              </div>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Delete Confirmation */}
+      {deleteId && (
+        <Modal title="Konfirmasi Hapus" onClose={() => setDeleteId(null)}>
+          <p className="text-gray-700 mb-6">Yakin ingin menghapus data barang ini? Tindakan ini tidak dapat dibatalkan.</p>
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => setDeleteId(null)} className="border border-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm hover:bg-gray-50">
+              Batal
+            </button>
+            <button onClick={handleDelete} disabled={saving} className="bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">
+              {saving ? 'Menghapus...' : 'Hapus'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {toast && <Toast message={toast} type="error" onClose={() => setToast('')} />}
     </div>
   )
 }

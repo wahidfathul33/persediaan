@@ -17,6 +17,11 @@ const SHEETS = {
     rt:   SS.getSheetByName("Keluar RT"),
     obat: SS.getSheetByName("Keluar Obat"),
   },
+  masuk: {
+    atk:  SS.getSheetByName("Masuk ATK"),
+    rt:   SS.getSheetByName("Masuk RT"),
+    obat: SS.getSheetByName("Masuk Obat"),
+  },
 }
 
 const PREFIX = { atk: "ATK", rt: "RT", obat: "OBT" }
@@ -25,6 +30,7 @@ const PREFIX = { atk: "ATK", rt: "RT", obat: "OBT" }
 
 function getBarangSheet(type) { return SHEETS.barang[type] || null }
 function getKeluarSheet(type) { return SHEETS.keluar[type] || null }
+function getMasukSheet(type)  { return SHEETS.masuk[type]  || null }
 
 /** Read all data rows skipping header. 1x Spreadsheet API call. */
 function readRows(sheet) {
@@ -133,6 +139,7 @@ function doGet(e) {
   if (action == "ping")   return jsonResponse({ ok: true })
   if (action == "barang") return getBarang(type)
   if (action == "keluar") return getKeluar(type, month, year)
+  if (action == "masuk")  return getMasuk(type, month, year)
   if (action == "stok")   return getStok(month, year)
 
   return jsonResponse({ error: "unknown action" })
@@ -150,6 +157,24 @@ function getBarang(type) {
 
 function getKeluar(type, month, year) {
   const sheet = getKeluarSheet(type)
+  if (!sheet) return jsonResponse({ error: "invalid type" })
+
+  let rows = readRows(sheet)
+
+  if (month && year) {
+    const m = Number(month)
+    const y = Number(year)
+    rows = rows.filter(function(r) {
+      const d = new Date(r[6])
+      return d.getMonth() + 1 === m && d.getFullYear() === y
+    })
+  }
+
+  return jsonResponse(rows)
+}
+
+function getMasuk(type, month, year) {
+  const sheet = getMasukSheet(type)
   if (!sheet) return jsonResponse({ error: "invalid type" })
 
   let rows = readRows(sheet)
@@ -195,7 +220,11 @@ function doPost(e) {
     return jsonResponse({ status: rolloverSaldo(data.cronSecret) ? "success" : "unauthorized" })
   }
 
-  const sheet  = getKeluarSheet(type)
+  // Route barang actions (no sheet needed here, resolved per action)
+  const isBarang = action == "addBarang" || action == "updateBarang" || action == "deleteBarang"
+  // Route masuk actions to masuk sheet
+  const isMasuk = action == "addMasuk" || action == "addMasukBatch" || action == "updateMasuk" || action == "deleteMasuk"
+  const sheet  = isMasuk ? getMasukSheet(type) : isBarang ? null : getKeluarSheet(type)
   const prefix = PREFIX[type] || "DB"
 
   // LockService: prevent race conditions on concurrent stok updates
@@ -344,6 +373,207 @@ function doPost(e) {
         getBarangSheet(type).getRange(bEntry.rowIndex, 7).setValue(bEntry.sisa_saldo + kEntry.qty)
         clearBarangCache(type)
       }
+
+      _te(t)
+    }
+
+    // ── ADD MASUK ──────────────────────────────────────────────────────────
+    if (action == "addMasuk") {
+      const t = _t("addMasuk")
+
+      const lastRow    = sheet.getLastRow()
+      const id         = prefix + "-M-" + String(lastRow).padStart(4, "0")
+      const barangRows = readRows(getBarangSheet(type))
+      const barangMap  = buildBarangMap(barangRows)
+      const entry      = barangMap[String(data.id_barang)]
+      const sisaSaldo  = (entry ? entry.sisa_saldo : 0) + Number(data.qty)
+
+      sheet.appendRow([
+        id, data.id_barang, data.kode_barang, data.nama_barang,
+        data.merk, data.satuan, data.tanggal, Number(data.qty),
+        sisaSaldo, data.keterangan
+      ])
+
+      // Incremental update: saldo += qty
+      if (entry) {
+        getBarangSheet(type).getRange(entry.rowIndex, 7).setValue(sisaSaldo)
+        clearBarangCache(type)
+      }
+
+      _te(t)
+    }
+
+    // ── ADD MASUK BATCH ────────────────────────────────────────────────────
+    if (action == "addMasukBatch") {
+      const t = _t("addMasukBatch(" + data.items.length + ")")
+
+      const barangRows = readRows(getBarangSheet(type))
+      const barangMap  = buildBarangMap(barangRows)
+
+      const runSaldo   = {}
+      const newRows    = []
+      let   nextRowNum = sheet.getLastRow() + 1
+
+      data.items.forEach(function(item) {
+        const id  = prefix + "-M-" + String(nextRowNum - 1).padStart(4, "0")
+        const idB = String(item.id_barang)
+        const qty = Number(item.qty)
+
+        if (!(idB in runSaldo)) {
+          const entry = barangMap[idB]
+          runSaldo[idB] = entry ? entry.sisa_saldo : 0
+        }
+        runSaldo[idB] += qty
+
+        newRows.push([
+          id, item.id_barang, item.kode_barang, item.nama_barang,
+          item.merk, item.satuan, item.tanggal, qty,
+          runSaldo[idB], item.keterangan
+        ])
+        nextRowNum++
+      })
+
+      batchInsertRows(sheet, newRows)
+
+      const barangSheet = getBarangSheet(type)
+      Object.keys(runSaldo).forEach(function(idB) {
+        const entry = barangMap[idB]
+        if (entry) barangSheet.getRange(entry.rowIndex, 7).setValue(runSaldo[idB])
+      })
+      clearBarangCache(type)
+
+      _te(t)
+    }
+
+    // ── UPDATE MASUK ───────────────────────────────────────────────────────
+    if (action == "updateMasuk") {
+      const t = _t("updateMasuk")
+
+      const masukRows  = readRows(sheet)
+      const masukMap   = buildKeluarMap(masukRows)
+      const kEntry     = masukMap[String(data.id)]
+      if (!kEntry) return jsonResponse({ status: "error", message: "id not found" })
+
+      const oldIdBarang = kEntry.id_barang
+      const oldQty      = kEntry.qty
+      const newQty      = Number(data.qty)
+      const sameBarang  = oldIdBarang === String(data.id_barang)
+
+      const barangRows  = readRows(getBarangSheet(type))
+      const barangMap   = buildBarangMap(barangRows)
+      const barangSheet = getBarangSheet(type)
+
+      sheet.getRange(kEntry.rowIndex, 1, 1, 10).setValues([[
+        data.id, data.id_barang, data.kode_barang, data.nama_barang,
+        data.merk, data.satuan, data.tanggal, newQty, 0, data.keterangan
+      ]])
+
+      const newEntry = barangMap[String(data.id_barang)]
+      if (newEntry) {
+        const newSaldo = sameBarang
+          ? newEntry.sisa_saldo + (newQty - oldQty)   // same barang: adjust delta
+          : newEntry.sisa_saldo + newQty               // different barang: add full
+        barangSheet.getRange(newEntry.rowIndex, 7).setValue(newSaldo)
+        sheet.getRange(kEntry.rowIndex, 9).setValue(newSaldo)
+      }
+
+      // Remove old barang addition if barang changed
+      if (!sameBarang) {
+        const oldEntry = barangMap[String(oldIdBarang)]
+        if (oldEntry) barangSheet.getRange(oldEntry.rowIndex, 7).setValue(oldEntry.sisa_saldo - oldQty)
+      }
+
+      clearBarangCache(type)
+      _te(t)
+    }
+
+    // ── DELETE MASUK ───────────────────────────────────────────────────────
+    if (action == "deleteMasuk") {
+      const t = _t("deleteMasuk")
+
+      const masukRows = readRows(sheet)
+      const masukMap  = buildKeluarMap(masukRows)
+      const kEntry    = masukMap[String(data.id)]
+      if (!kEntry) return jsonResponse({ status: "error", message: "id not found" })
+
+      sheet.deleteRow(kEntry.rowIndex)
+
+      // Incremental restore: saldo -= qty
+      const barangRows = readRows(getBarangSheet(type))
+      const barangMap  = buildBarangMap(barangRows)
+      const bEntry     = barangMap[kEntry.id_barang]
+      if (bEntry) {
+        getBarangSheet(type).getRange(bEntry.rowIndex, 7).setValue(bEntry.sisa_saldo - kEntry.qty)
+        clearBarangCache(type)
+      }
+
+      _te(t)
+    }
+
+    // ── ADD BARANG ─────────────────────────────────────────────────────────
+    if (action == "addBarang") {
+      const t = _t("addBarang")
+
+      const bSheet  = getBarangSheet(type)
+      const lastRow = bSheet.getLastRow()
+      const id      = prefix + "-" + String(lastRow).padStart(4, "0")
+
+      bSheet.appendRow([
+        id,
+        data.kode_barang,
+        data.nama_barang,
+        data.merk,
+        data.satuan,
+        Number(data.saldo_awal),
+        Number(data.saldo_awal),  // sisa_saldo starts equal to saldo_awal
+      ])
+      clearBarangCache(type)
+
+      _te(t)
+    }
+
+    // ── UPDATE BARANG ──────────────────────────────────────────────────────
+    if (action == "updateBarang") {
+      const t = _t("updateBarang")
+
+      const bSheet   = getBarangSheet(type)
+      const bRows    = readRows(bSheet)
+      const barangMap = buildBarangMap(bRows)
+      const entry    = barangMap[String(data.id)]
+      if (!entry) return jsonResponse({ status: "error", message: "id not found" })
+
+      // Recalculate sisa_saldo: adjust for change in saldo_awal
+      const oldSaldoAwal = entry.saldo_awal
+      const newSaldoAwal = Number(data.saldo_awal)
+      const delta        = newSaldoAwal - oldSaldoAwal
+      const newSisaSaldo = entry.sisa_saldo + delta
+
+      bSheet.getRange(entry.rowIndex, 1, 1, 7).setValues([[
+        data.id,
+        data.kode_barang,
+        data.nama_barang,
+        data.merk,
+        data.satuan,
+        newSaldoAwal,
+        newSisaSaldo,
+      ]])
+      clearBarangCache(type)
+
+      _te(t)
+    }
+
+    // ── DELETE BARANG ──────────────────────────────────────────────────────
+    if (action == "deleteBarang") {
+      const t = _t("deleteBarang")
+
+      const bSheet    = getBarangSheet(type)
+      const bRows     = readRows(bSheet)
+      const barangMap = buildBarangMap(bRows)
+      const entry     = barangMap[String(data.id)]
+      if (!entry) return jsonResponse({ status: "error", message: "id not found" })
+
+      bSheet.deleteRow(entry.rowIndex)
+      clearBarangCache(type)
 
       _te(t)
     }

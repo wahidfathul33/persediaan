@@ -153,3 +153,71 @@ export async function getStokData(month: number, year: number): Promise<StokItem
   const res = await apiFetch(`${BASE_URL}?action=stok&month=${month}&year=${year}`, { cache: 'no-store' })
   return res.json()
 }
+
+// ─── Masuk ────────────────────────────────────────────────────────────────────
+
+export interface Masuk {
+  id: string
+  id_barang: string
+  kode_barang: string
+  nama_barang: string
+  merk: string
+  satuan: string
+  tanggal: string
+  qty: number
+  sisa_saldo: number
+  keterangan: string
+}
+
+export async function getMasuk(type: KeluarType, month?: number, year?: number): Promise<Masuk[]> {
+  let url = `${BASE_URL}?action=masuk&type=${type}`
+  if (month && year) url += `&month=${month}&year=${year}`
+  const res = await apiFetch(url, { cache: 'no-store' })
+  const data: unknown[][] = await res.json()
+  return data.map((r) => ({
+    id: String(r[0]),
+    id_barang: String(r[1]),
+    kode_barang: String(r[2]),
+    nama_barang: String(r[3]),
+    merk: String(r[4]),
+    satuan: String(r[5]),
+    tanggal: parseDate(r[6]),
+    qty: Number(r[7]),
+    sisa_saldo: Number(r[8]),
+    keterangan: String(r[9] ?? ''),
+  }))
+}
+
+export async function addMasuk(type: KeluarType, payload: Omit<Masuk, 'id' | 'sisa_saldo'>): Promise<void> {
+  await postJSON({ ...payload, type, action: 'addMasuk' })
+}
+
+export async function addMasukBatch(type: KeluarType, items: Omit<Masuk, 'id' | 'sisa_saldo'>[]): Promise<void> {
+  if (items.length === 1) {
+    await addMasuk(type, items[0])
+    return
+  }
+  await postJSON({ items, type, action: 'addMasukBatch' })
+}
+
+export async function updateMasuk(type: KeluarType, payload: Omit<Masuk, 'sisa_saldo'>): Promise<void> {
+  await postJSON({ ...payload, type, action: 'updateMasuk' })
+}
+
+export async function deleteMasuk(type: KeluarType, id: string): Promise<void> {
+  await postJSON({ id, type, action: 'deleteMasuk' })
+}
+
+// ─── Barang CRUD ──────────────────────────────────────────────────────────────
+
+export async function addBarang(type: KeluarType, payload: Omit<Barang, 'id' | 'sisa_saldo'>): Promise<void> {
+  await postJSON({ ...payload, type, action: 'addBarang' })
+}
+
+export async function updateBarang(type: KeluarType, payload: Barang): Promise<void> {
+  await postJSON({ ...payload, type, action: 'updateBarang' })
+}
+
+export async function deleteBarang(type: KeluarType, id: string): Promise<void> {
+  await postJSON({ id, type, action: 'deleteBarang' })
+}

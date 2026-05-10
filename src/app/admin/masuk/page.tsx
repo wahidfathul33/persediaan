@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { getKeluar, getBarangGrouped, addKeluarBatch, updateKeluar, deleteKeluar, pingAPI, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getMasuk, getBarangGrouped, addMasukBatch, updateMasuk, deleteMasuk, pingAPI, type Masuk, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
 import Toast from '@/components/Toast'
@@ -14,7 +14,7 @@ const TYPES: { value: KeluarType; label: string }[] = [
 
 const MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
 
-type ItemForm = Omit<Keluar, 'id' | 'sisa_saldo'>
+type ItemForm = Omit<Masuk, 'id' | 'sisa_saldo'>
 type ItemErrors = Partial<Record<'nama_barang' | 'tanggal' | 'qty', string>>
 
 function makeItem(): ItemForm {
@@ -118,7 +118,7 @@ function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, error
 
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">
-            Jumlah Keluar <span className="text-red-500">*</span>
+            Jumlah Masuk <span className="text-red-500">*</span>
           </label>
           <div className={`flex rounded-lg overflow-hidden border ${errors.qty ? 'border-red-400' : 'border-gray-300'} focus-within:ring-2 focus-within:ring-orange-400`}>
             <input
@@ -155,12 +155,12 @@ function ItemRow({ index, item, barangList, onChange, onRemove, canRemove, error
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default function KeluarPage() {
+export default function MasukPage() {
   const now = new Date()
   const [activeType, setActiveType] = useState<KeluarType>('atk')
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [year, setYear] = useState(now.getFullYear())
-  const [allKeluar, setAllKeluar] = useState<Record<KeluarType, Keluar[]>>({ atk: [], rt: [], obat: [] })
+  const [allMasuk, setAllMasuk] = useState<Record<KeluarType, Masuk[]>>({ atk: [], rt: [], obat: [] })
   const [barangGrouped, setBarangGrouped] = useState<BarangGrouped>({ atk: [], rt: [], obat: [] })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -179,12 +179,12 @@ export default function KeluarPage() {
     setError('')
     try {
       const [atkData, rtData, obatData, grouped] = await Promise.all([
-        getKeluar('atk', month, year),
-        getKeluar('rt', month, year),
-        getKeluar('obat', month, year),
+        getMasuk('atk', month, year),
+        getMasuk('rt', month, year),
+        getMasuk('obat', month, year),
         getBarangGrouped(),
       ])
-      setAllKeluar({ atk: atkData, rt: rtData, obat: obatData })
+      setAllMasuk({ atk: atkData, rt: rtData, obat: obatData })
       setBarangGrouped(grouped)
     } catch {
       setError('Gagal memuat data.')
@@ -209,7 +209,7 @@ export default function KeluarPage() {
     pingAPI()
   }
 
-  function openEdit(row: Keluar) {
+  function openEdit(row: Masuk) {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { id, sisa_saldo, ...rest } = row
     setEditId(id)
@@ -260,9 +260,9 @@ export default function KeluarPage() {
     setSaving(true)
     try {
       if (editId) {
-        await updateKeluar(activeType, { ...items[0], id: editId })
+        await updateMasuk(activeType, { ...items[0], id: editId })
       } else {
-        await addKeluarBatch(activeType, items)
+        await addMasukBatch(activeType, items)
       }
       setModalOpen(false)
       await load()
@@ -277,7 +277,7 @@ export default function KeluarPage() {
     if (!deleteId) return
     setSaving(true)
     try {
-      await deleteKeluar(activeType, deleteId)
+      await deleteMasuk(activeType, deleteId)
       setDeleteId(null)
       await load()
     } catch {
@@ -291,7 +291,7 @@ export default function KeluarPage() {
 
   useEffect(() => { setPage(1) }, [search])
 
-  const data = allKeluar[activeType]
+  const data = allMasuk[activeType]
   const filtered = data.filter((d) => {
     const q = search.toLowerCase()
     return (
@@ -309,12 +309,12 @@ export default function KeluarPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold text-gray-800">Persediaan Keluar</h1>
+        <h1 className="text-2xl font-bold text-gray-800">Persediaan Masuk</h1>
         <div className="flex gap-2">
           <button onClick={load} className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors">
             🔄 Refresh
           </button>
-          <button onClick={openAdd} className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 transition-colors">
+          <button onClick={openAdd} className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors">
             + Tambah
           </button>
         </div>
@@ -328,14 +328,14 @@ export default function KeluarPage() {
             onClick={() => { setActiveType(t.value); setSearch('') }}
             className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors ${
               activeType === t.value
-                ? 'border-orange-500 text-orange-600 bg-orange-50'
+                ? 'border-green-600 text-green-700 bg-green-50'
                 : 'border-transparent text-gray-500 hover:text-gray-700'
             }`}
           >
             {t.label}
             {!loading && (
               <span className="ml-1.5 text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">
-                {allKeluar[t.value].length}
+                {allMasuk[t.value].length}
               </span>
             )}
           </button>
@@ -390,13 +390,13 @@ export default function KeluarPage() {
             placeholder="Cari kode, nama, merk, atau keterangan..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full max-w-xs border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400"
+            className="w-full max-w-xs border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
           />
         </div>
 
         {loading ? (
           <div className="flex items-center justify-center h-40">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-500" />
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600" />
           </div>
         ) : error ? (
           <div className="p-6 text-red-600 text-sm">{error}</div>
@@ -412,7 +412,7 @@ export default function KeluarPage() {
                   <th className="px-4 py-3 text-left">Merk</th>
                   <th className="px-4 py-3 text-left">Satuan</th>
                   <th className="px-4 py-3 text-left">Tanggal</th>
-                  <th className="px-4 py-3 text-right">Jml Keluar</th>
+                  <th className="px-4 py-3 text-right">Jml Masuk</th>
                   <th className="px-4 py-3 text-right">Sisa Saldo</th>
                   <th className="px-4 py-3 text-left">Keterangan</th>
                   <th className="px-4 py-3 text-center">Aksi</th>
@@ -431,7 +431,7 @@ export default function KeluarPage() {
                       <td className="px-4 py-3 text-gray-600">{row.merk}</td>
                       <td className="px-4 py-3 text-gray-600">{row.satuan}</td>
                       <td className="px-4 py-3 text-gray-600">{row.tanggal}</td>
-                      <td className="px-4 py-3 text-right font-medium text-orange-600">{row.qty}</td>
+                      <td className="px-4 py-3 text-right font-medium text-green-700">{row.qty}</td>
                       <td className="px-4 py-3 text-right font-medium text-blue-600">{row.sisa_saldo}</td>
                       <td className="px-4 py-3 text-gray-500 text-xs max-w-32 truncate">{row.keterangan}</td>
                       <td className="px-4 py-3 text-center">
@@ -472,7 +472,7 @@ export default function KeluarPage() {
                     <button
                       key={p}
                       onClick={() => setPage(p as number)}
-                      className={`px-3 py-1 rounded text-sm border ${currentPage === p ? 'bg-orange-500 text-white border-orange-500' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+                      className={`px-3 py-1 rounded text-sm border ${currentPage === p ? 'bg-green-600 text-white border-green-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
                     >{p}</button>
                   )
                 )}
@@ -489,7 +489,7 @@ export default function KeluarPage() {
       {/* Add/Edit Modal */}
       {modalOpen && (
         <Modal
-          title={editId ? 'Edit Persediaan Keluar' : `Tambah Keluar ${TYPES.find(t => t.value === activeType)?.label}`}
+          title={editId ? 'Edit Persediaan Masuk' : `Tambah Masuk ${TYPES.find(t => t.value === activeType)?.label}`}
           onClose={() => setModalOpen(false)}
           size="xxl"
           footer={
@@ -503,16 +503,16 @@ export default function KeluarPage() {
               </button>
               <button
                 type="submit"
-                form="keluar-modal-form"
+                form="masuk-modal-form"
                 disabled={saving}
-                className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 disabled:opacity-50"
+                className="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50"
               >
                 {saving ? 'Menyimpan...' : editId ? 'Update' : `Simpan${items.length > 1 ? ` (${items.length} item)` : ''}`}
               </button>
             </div>
           }
         >
-          <form id="keluar-modal-form" onSubmit={handleSubmit} className="space-y-3">
+          <form id="masuk-modal-form" onSubmit={handleSubmit} className="space-y-3">
             {items.map((item, i) => (
               <ItemRow
                 key={i}
@@ -529,7 +529,7 @@ export default function KeluarPage() {
               <button
                 type="button"
                 onClick={addItem}
-                className="w-full border-2 border-dashed border-gray-300 text-gray-500 rounded-lg py-2.5 text-sm hover:border-orange-400 hover:text-orange-500 transition-colors"
+                className="w-full border-2 border-dashed border-gray-300 text-gray-500 rounded-lg py-2.5 text-sm hover:border-green-500 hover:text-green-600 transition-colors"
               >
                 + Tambah Item
               </button>
@@ -556,4 +556,3 @@ export default function KeluarPage() {
     </div>
   )
 }
-
