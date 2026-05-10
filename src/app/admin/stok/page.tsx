@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import * as XLSX from 'xlsx'
+import { RefreshCw, Download } from 'lucide-react'
 import { getStokData, getBarangGrouped, type StokItem, type KeluarType } from '@/lib/api'
 
 const MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
@@ -91,9 +92,9 @@ export default function StokPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-800">Laporan Stok</h1>
-        <button onClick={load} className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-          🔄 Refresh
+        <h1 className="text-2xl font-bold text-gray-900">Laporan Stok</h1>
+        <button onClick={load} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors">
+          <RefreshCw size={14} /> Refresh
         </button>
       </div>
 
@@ -189,9 +190,9 @@ export default function StokPage() {
           <button
             onClick={downloadExcel}
             disabled={loading || filtered.length === 0}
-            className="shrink-0 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="shrink-0 flex items-center gap-1.5 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            ⬇ Download Excel
+            <Download size={15} /> Download Excel
           </button>
         </div>
 

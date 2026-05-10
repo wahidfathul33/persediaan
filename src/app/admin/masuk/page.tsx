@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { RefreshCw, Plus } from 'lucide-react'
 import { getMasuk, getBarangGrouped, addMasukBatch, updateMasuk, deleteMasuk, pingAPI, type Masuk, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
@@ -309,9 +310,9 @@ export default function MasukPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold text-gray-800">Persediaan Masuk</h1>
-        <button onClick={load} className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors">
-          🔄 Refresh
+        <h1 className="text-2xl font-bold text-gray-900">Persediaan Masuk</h1>
+        <button onClick={load} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors">
+          <RefreshCw size={14} /> Refresh
         </button>
       </div>
 
@@ -387,8 +388,8 @@ export default function MasukPage() {
             onChange={(e) => setSearch(e.target.value)}
             className="w-full max-w-xs border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
           />
-          <button onClick={openAdd} className="shrink-0 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors">
-            + Tambah
+          <button onClick={openAdd} className="shrink-0 flex items-center gap-1.5 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors">
+            <Plus size={15} /> Tambah
           </button>
         </div>
 

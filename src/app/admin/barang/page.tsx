@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { RefreshCw, Plus } from 'lucide-react'
 import { getBarangGrouped, addBarang, updateBarang, deleteBarang, pingAPI, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import Toast from '@/components/Toast'
@@ -132,12 +133,12 @@ export default function BarangPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-800">Master Barang</h1>
+        <h1 className="text-2xl font-bold text-gray-900">Master Barang</h1>
         <button
           onClick={load}
-          className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors"
+          className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors"
         >
-          🔄 Refresh
+          <RefreshCw size={14} /> Refresh
         </button>
       </div>
 
@@ -174,9 +175,9 @@ export default function BarangPage() {
           />
           <button
             onClick={openAdd}
-            className="shrink-0 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+            className="shrink-0 flex items-center gap-1.5 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
           >
-            + Tambah Barang
+            <Plus size={15} /> Tambah Barang
           </button>
         </div>
 

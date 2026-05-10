@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { Package, PackagePlus, PackageMinus, BarChart3, AlertTriangle, XCircle, ChevronRight } from 'lucide-react'
 import { getBarangGrouped, getKeluar, getMasuk, getStokData, type StokItem } from '@/lib/api'
 
 interface Summary {
@@ -71,47 +72,65 @@ export default function DashboardPage() {
   const s = summary!
 
   const cards = [
-    { label: 'Jenis Barang', value: s.totalBarang, color: 'bg-blue-600', icon: '📦', href: '/admin/barang' },
-    { label: 'Masuk Bulan Ini', value: s.totalMasuk, color: 'bg-green-600', icon: '📥', href: '/admin/masuk' },
-    { label: 'Keluar Bulan Ini', value: s.totalKeluar, color: 'bg-orange-500', icon: '📤', href: '/admin/keluar' },
-    { label: 'Stok Habis', value: s.stokHabis, color: 'bg-red-600', icon: '🚫', href: '/admin/stok' },
-    { label: 'Stok Rendah', value: s.stokRendah, color: 'bg-yellow-500', icon: '⚠️', href: '/admin/stok' },
+    { label: 'Jenis Barang',      value: s.totalBarang, color: 'bg-blue-600',   icon: Package,       href: '/admin/barang' },
+    { label: 'Masuk Bulan Ini',   value: s.totalMasuk,  color: 'bg-green-600',  icon: PackagePlus,   href: '/admin/masuk' },
+    { label: 'Keluar Bulan Ini',  value: s.totalKeluar, color: 'bg-orange-500', icon: PackageMinus,  href: '/admin/keluar' },
+    { label: 'Stok Habis',        value: s.stokHabis,   color: 'bg-red-500',    icon: XCircle,       href: '/admin/stok' },
+    { label: 'Stok Rendah',       value: s.stokRendah,  color: 'bg-amber-500',  icon: AlertTriangle, href: '/admin/stok' },
   ]
 
   const quickLinks = [
-    { href: '/admin/barang', label: 'Master Barang', icon: '🗂️' },
-    { href: '/admin/masuk', label: 'Persediaan Masuk', icon: '📥' },
-    { href: '/admin/keluar', label: 'Persediaan Keluar', icon: '📤' },
-    { href: '/admin/stok', label: 'Laporan Stok', icon: '📊' },
+    { href: '/admin/barang', label: 'Master Barang',     icon: Package },
+    { href: '/admin/masuk',  label: 'Persediaan Masuk',  icon: PackagePlus },
+    { href: '/admin/keluar', label: 'Persediaan Keluar', icon: PackageMinus },
+    { href: '/admin/stok',   label: 'Laporan Stok',      icon: BarChart3 },
   ]
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-800 mb-6">Dashboard</h1>
+      <h1 className="text-2xl font-bold text-gray-900 mb-6">Dashboard</h1>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
-        {cards.map((c) => (
-          <Link key={c.label} href={c.href} className={`${c.color} text-white rounded-xl p-5 shadow hover:opacity-90 transition-opacity`}>
-            <div className="text-3xl mb-2">{c.icon}</div>
-            <div className="text-3xl font-bold">{c.value}</div>
-            <div className="text-sm opacity-90 mt-1">{c.label}</div>
-          </Link>
-        ))}
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
+        {cards.map((c) => {
+          const Icon = c.icon
+          return (
+            <Link
+              key={c.label}
+              href={c.href}
+              className={`${c.color} text-white rounded-2xl p-5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all`}
+            >
+              <Icon size={24} className="mb-3 opacity-90" />
+              <div className="text-3xl font-bold">{c.value}</div>
+              <div className="text-sm opacity-85 mt-1 font-medium">{c.label}</div>
+            </Link>
+          )
+        })}
       </div>
 
+      {/* Quick links */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
-        {quickLinks.map((l) => (
-          <Link key={l.href} href={l.href} className="bg-white border border-gray-200 rounded-xl p-4 text-center hover:border-blue-400 hover:shadow-md transition-all">
-            <div className="text-2xl mb-1">{l.icon}</div>
-            <div className="text-sm font-medium text-gray-700">{l.label}</div>
+        {quickLinks.map(({ href, label, icon: Icon }) => (
+          <Link
+            key={href}
+            href={href}
+            className="bg-white border border-gray-200 rounded-xl p-4 flex items-center gap-3 hover:border-blue-400 hover:shadow-md transition-all group"
+          >
+            <div className="bg-blue-50 text-blue-600 p-2 rounded-lg group-hover:bg-blue-100 transition-colors">
+              <Icon size={18} />
+            </div>
+            <span className="text-sm font-medium text-gray-700">{label}</span>
           </Link>
         ))}
       </div>
 
-      <div className="bg-white rounded-xl shadow border border-gray-200">
-        <div className="px-6 py-4 border-b flex items-center justify-between">
-          <h2 className="font-semibold text-gray-800">Ringkasan Stok Bulan Ini</h2>
-          <Link href="/admin/stok" className="text-sm text-blue-600 hover:underline">Lihat semua →</Link>
+      {/* Stock table */}
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-200">
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="font-semibold text-gray-900">Ringkasan Stok Bulan Ini</h2>
+          <Link href="/admin/stok" className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700 font-medium">
+            Lihat semua <ChevronRight size={14} />
+          </Link>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -141,11 +160,11 @@ export default function DashboardPage() {
                     <td className="px-4 py-3 text-right text-orange-500 font-medium">{item.total_pemakaian}</td>
                     <td className="px-4 py-3 text-right font-bold text-gray-800">{item.sisa_saldo}</td>
                     <td className="px-4 py-3 text-center">
-                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
+                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
                         item.sisa_saldo <= 0
                           ? 'bg-red-100 text-red-700'
                           : item.sisa_saldo <= 5
-                          ? 'bg-yellow-100 text-yellow-700'
+                          ? 'bg-amber-100 text-amber-700'
                           : 'bg-green-100 text-green-700'
                       }`}>
                         {item.sisa_saldo <= 0 ? 'Habis' : item.sisa_saldo <= 5 ? 'Rendah' : 'Aman'}
