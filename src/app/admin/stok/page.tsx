@@ -61,6 +61,7 @@ export default function StokPage() {
   const daysInMonth = tabData[0]?.days_in_month ?? data[0]?.days_in_month ?? 30
   const totalPemakaian = filtered.reduce((sum, s) => sum + s.total_pemakaian, 0)
   const habis = filtered.filter((s) => s.sisa_saldo <= 0).length
+  const isCurrentMonth = month === now.getMonth() + 1 && year === now.getFullYear()
 
   function downloadExcel() {
     const tabLabel = TABS.find((t) => t.value === activeTab)?.label ?? activeTab.toUpperCase()
@@ -212,18 +213,18 @@ export default function StokPage() {
                   <th className="px-3 py-3 text-left border border-gray-200 min-w-[160px]">Nama Barang</th>
                   <th className="px-3 py-3 text-left border border-gray-200 min-w-[80px]">Merk</th>
                   <th className="px-3 py-3 text-left border border-gray-200 min-w-[60px]">Satuan</th>
-                  <th className="px-3 py-3 text-right border border-gray-200 min-w-[70px]">Saldo Awal</th>
+                  {isCurrentMonth && <th className="px-3 py-3 text-right border border-gray-200 min-w-[70px]">Saldo Awal</th>}
                   {Array.from({ length: daysInMonth }, (_, i) => (
                     <th key={i} className="px-1 py-3 text-center border border-gray-200 min-w-[30px]">{i + 1}</th>
                   ))}
                   <th className="px-3 py-3 text-right border border-gray-200 min-w-[90px] text-orange-600">Total Pakai</th>
-                  <th className="px-3 py-3 text-right border border-gray-200 min-w-[80px] text-blue-600">Sisa Saldo</th>
+                  {isCurrentMonth && <th className="px-3 py-3 text-right border border-gray-200 min-w-[80px] text-blue-600">Sisa Saldo</th>}
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={6 + daysInMonth + 2} className="text-center py-10 text-gray-400">
+                    <td colSpan={(isCurrentMonth ? 6 : 4) + daysInMonth + (isCurrentMonth ? 2 : 1)} className="text-center py-10 text-gray-400">
                       Belum ada data untuk periode ini
                     </td>
                   </tr>
@@ -235,7 +236,7 @@ export default function StokPage() {
                       <td className="px-3 py-2 font-medium text-gray-800 border border-gray-100">{s.nama_barang}</td>
                       <td className="px-3 py-2 text-gray-600 border border-gray-100">{s.merk}</td>
                       <td className="px-3 py-2 text-gray-600 border border-gray-100">{s.satuan}</td>
-                      <td className="px-3 py-2 text-right font-medium text-gray-700 border border-gray-100">{s.saldo_awal}</td>
+                      {isCurrentMonth && <td className="px-3 py-2 text-right font-medium text-gray-700 border border-gray-100">{s.saldo_awal}</td>}
                       {s.keluar_per_tanggal.map((qty, d) => (
                         <td
                           key={d}
@@ -245,9 +246,11 @@ export default function StokPage() {
                         </td>
                       ))}
                       <td className="px-3 py-2 text-right font-bold text-orange-600 border border-gray-100">{s.total_pemakaian}</td>
-                      <td className={`px-3 py-2 text-right font-bold border border-gray-100 ${s.sisa_saldo <= 0 ? 'text-red-600' : 'text-blue-600'}`}>
-                        {s.sisa_saldo}
-                      </td>
+                      {isCurrentMonth && (
+                        <td className={`px-3 py-2 text-right font-bold border border-gray-100 ${s.sisa_saldo <= 0 ? 'text-red-600' : 'text-blue-600'}`}>
+                          {s.sisa_saldo}
+                        </td>
+                      )}
                     </tr>
                   ))
                 )}
