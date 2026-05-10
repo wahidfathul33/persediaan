@@ -1,15 +1,24 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { getStokData, type StokItem } from '@/lib/api'
+import * as XLSX from 'xlsx'
+import { getStokData, getBarangGrouped, type StokItem, type KeluarType } from '@/lib/api'
 
 const MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
+
+const TABS: { value: KeluarType; label: string }[] = [
+  { value: 'atk', label: 'ATK' },
+  { value: 'rt', label: 'Rumah Tangga' },
+  { value: 'obat', label: 'Obat' },
+]
 
 export default function StokPage() {
   const now = new Date()
   const [month, setMonth] = useState(now.getMonth() + 1)
   const [year, setYear] = useState(now.getFullYear())
+  const [activeTab, setActiveTab] = useState<KeluarType>('atk')
   const [data, setData] = useState<StokItem[]>([])
+  const [typeMap, setTypeMap] = useState<Map<string, KeluarType>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
@@ -18,8 +27,16 @@ export default function StokPage() {
     setLoading(true)
     setError('')
     try {
-      const result = await getStokData(month, year)
-      setData(result)
+      const [stok, grouped] = await Promise.all([
+        getStokData(month, year),
+        getBarangGrouped(),
+      ])
+      setData(stok)
+      const map = new Map<string, KeluarType>()
+      ;(['atk', 'rt', 'obat'] as KeluarType[]).forEach((t) => {
+        grouped[t].forEach((b) => map.set(b.id, t))
+      })
+      setTypeMap(map)
     } catch {
       setError('Gagal memuat data stok.')
     } finally {
@@ -30,17 +47,46 @@ export default function StokPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [month, year])
 
+  const tabData = data.filter((s) => typeMap.get(s.id_barang) === activeTab)
+
   const q = search.toLowerCase()
-  const filtered = data.filter(
+  const filtered = tabData.filter(
     (s) =>
       String(s.kode_barang ?? '').toLowerCase().includes(q) ||
       String(s.nama_barang ?? '').toLowerCase().includes(q) ||
       String(s.merk ?? '').toLowerCase().includes(q)
   )
 
-  const daysInMonth = data[0]?.days_in_month ?? 30
+  const daysInMonth = tabData[0]?.days_in_month ?? data[0]?.days_in_month ?? 30
   const totalPemakaian = filtered.reduce((sum, s) => sum + s.total_pemakaian, 0)
   const habis = filtered.filter((s) => s.sisa_saldo <= 0).length
+
+  function downloadExcel() {
+    const tabLabel = TABS.find((t) => t.value === activeTab)?.label ?? activeTab.toUpperCase()
+    const periodLabel = `${MONTHS[month - 1]} ${year}`
+    const dayHeaders = Array.from({ length: daysInMonth }, (_, i) => String(i + 1))
+    const headers = ['No', 'Kode', 'Nama Barang', 'Merk', 'Satuan', 'Saldo Awal', ...dayHeaders, 'Total Pakai', 'Sisa Saldo']
+    const rows = filtered.map((s, i) => [
+      i + 1,
+      s.kode_barang,
+      s.nama_barang,
+      s.merk,
+      s.satuan,
+      s.saldo_awal,
+      ...s.keluar_per_tanggal,
+      s.total_pemakaian,
+      s.sisa_saldo,
+    ])
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
+    ws['!cols'] = [
+      { wch: 4 }, { wch: 10 }, { wch: 30 }, { wch: 14 }, { wch: 8 }, { wch: 10 },
+      ...Array.from({ length: daysInMonth }, () => ({ wch: 4 })),
+      { wch: 12 }, { wch: 10 },
+    ]
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, `Stok ${tabLabel}`)
+    XLSX.writeFile(wb, `Laporan_Stok_${tabLabel}_${periodLabel.replace(' ', '_')}.xlsx`)
+  }
 
   return (
     <div>
@@ -51,46 +97,69 @@ export default function StokPage() {
         </button>
       </div>
 
-      {/* Month/year filter */}
-      {/* Month/year picker */}
-      <div className="inline-flex items-center gap-0 mb-4 bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-        <button
-          onClick={() => {
-            if (month === 1) { setMonth(12); setYear((y) => y - 1) }
-            else setMonth((m) => m - 1)
-          }}
-          className="px-3 py-2.5 text-gray-500 hover:bg-gray-100 transition-colors text-lg leading-none"
-        >
-          ‹
-        </button>
-        <div className="flex items-center gap-2 px-3 py-2 border-x border-gray-200">
-          <select
-            value={month}
-            onChange={(e) => setMonth(Number(e.target.value))}
-            className="text-sm font-semibold text-gray-800 bg-transparent focus:outline-none cursor-pointer"
+      {/* Type tabs */}
+      <div className="flex gap-1 mb-4 border-b border-gray-200">
+        {TABS.map((t) => (
+          <button
+            key={t.value}
+            onClick={() => { setActiveTab(t.value); setSearch('') }}
+            className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition-colors ${
+              activeTab === t.value
+                ? 'border-blue-500 text-blue-600 bg-blue-50'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
           >
-            {MONTHS.map((m, i) => (
-              <option key={i} value={i + 1}>{m}</option>
-            ))}
-          </select>
-          <input
-            type="number"
-            value={year}
-            onChange={(e) => setYear(Number(e.target.value))}
-            className="text-sm font-semibold text-gray-800 bg-transparent w-16 focus:outline-none text-center"
-            min={2020}
-            max={2099}
-          />
+            {t.label}
+            {!loading && (
+              <span className="ml-1.5 text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">
+                {data.filter((s) => typeMap.get(s.id_barang) === t.value).length}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* Month/year picker */}
+      <div className="mb-4">
+        <div className="inline-flex items-center gap-0 bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+          <button
+            onClick={() => {
+              if (month === 1) { setMonth(12); setYear((y) => y - 1) }
+              else setMonth((m) => m - 1)
+            }}
+            className="px-3 py-2.5 text-gray-500 hover:bg-gray-100 transition-colors text-lg leading-none"
+          >
+            ‹
+          </button>
+          <div className="flex items-center gap-2 px-3 py-2 border-x border-gray-200">
+            <select
+              value={month}
+              onChange={(e) => setMonth(Number(e.target.value))}
+              className="text-sm font-semibold text-gray-800 bg-transparent focus:outline-none cursor-pointer"
+            >
+              {MONTHS.map((m, i) => (
+                <option key={i} value={i + 1}>{m}</option>
+              ))}
+            </select>
+            <input
+              type="number"
+              value={year}
+              onChange={(e) => setYear(Number(e.target.value))}
+              className="text-sm font-semibold text-gray-800 bg-transparent w-16 focus:outline-none text-center"
+              min={2020}
+              max={2099}
+            />
+          </div>
+          <button
+            onClick={() => {
+              if (month === 12) { setMonth(1); setYear((y) => y + 1) }
+              else setMonth((m) => m + 1)
+            }}
+            className="px-3 py-2.5 text-gray-500 hover:bg-gray-100 transition-colors text-lg leading-none"
+          >
+            ›
+          </button>
         </div>
-        <button
-          onClick={() => {
-            if (month === 12) { setMonth(1); setYear((y) => y + 1) }
-            else setMonth((m) => m + 1)
-          }}
-          className="px-3 py-2.5 text-gray-500 hover:bg-gray-100 transition-colors text-lg leading-none"
-        >
-          ›
-        </button>
       </div>
 
       {/* Summary cards */}
@@ -109,7 +178,7 @@ export default function StokPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow border border-gray-200">
-        <div className="px-4 py-3 border-b">
+        <div className="px-4 py-3 border-b flex items-center justify-between gap-3">
           <input
             type="text"
             placeholder="Cari kode, nama, atau merk..."
@@ -117,6 +186,13 @@ export default function StokPage() {
             onChange={(e) => setSearch(e.target.value)}
             className="w-full max-w-xs border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
+          <button
+            onClick={downloadExcel}
+            disabled={loading || filtered.length === 0}
+            className="shrink-0 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            ⬇ Download Excel
+          </button>
         </div>
 
         {loading ? (

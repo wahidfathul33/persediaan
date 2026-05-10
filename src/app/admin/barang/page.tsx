@@ -133,20 +133,12 @@ export default function BarangPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Master Barang</h1>
-        <div className="flex gap-2">
-          <button
-            onClick={load}
-            className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors"
-          >
-            🔄 Refresh
-          </button>
-          <button
-            onClick={openAdd}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
-          >
-            + Tambah Barang
-          </button>
-        </div>
+        <button
+          onClick={load}
+          className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors"
+        >
+          🔄 Refresh
+        </button>
       </div>
 
       {/* Type tabs */}
@@ -172,7 +164,7 @@ export default function BarangPage() {
       </div>
 
       <div className="bg-white rounded-xl shadow border border-gray-200">
-        <div className="px-4 py-3 border-b">
+        <div className="px-4 py-3 border-b flex items-center justify-between gap-3">
           <input
             type="text"
             placeholder="Cari kode, nama, atau merk..."
@@ -180,6 +172,12 @@ export default function BarangPage() {
             onChange={(e) => setSearch(e.target.value)}
             className="w-full max-w-xs border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
+          <button
+            onClick={openAdd}
+            className="shrink-0 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors"
+          >
+            + Tambah Barang
+          </button>
         </div>
 
         {loading ? (
