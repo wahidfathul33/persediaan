@@ -174,19 +174,22 @@ export default function KeluarInputPage() {
   const [submitError, setSubmitError] = useState('')
   const [toast, setToast] = useState('')
   const newItemRef = useRef<HTMLDivElement>(null)
-  const actionsRef = useRef<HTMLDivElement>(null)
+  const [actionsEl, setActionsEl] = useState<HTMLDivElement | null>(null)
   const [isSticky, setIsSticky] = useState(false)
 
   useEffect(() => {
-    const el = actionsRef.current
-    if (!el) return
+    setIsSticky(false)
+    if (!actionsEl) return
     const observer = new IntersectionObserver(
       ([entry]) => setIsSticky(!entry.isIntersecting),
       { threshold: 0 }
     )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [actionsRef.current])
+    observer.observe(actionsEl)
+    return () => {
+      observer.disconnect()
+      setIsSticky(false)
+    }
+  }, [actionsEl])
 
   useEffect(() => {
     getBarangGrouped()
@@ -360,7 +363,7 @@ export default function KeluarInputPage() {
           )}
 
           {/* Inline action buttons — observed for sticky trigger */}
-          <div ref={actionsRef} className="space-y-3">
+          <div ref={setActionsEl} className="space-y-3">
             <button
               type="button"
               onClick={addItem}
@@ -380,7 +383,7 @@ export default function KeluarInputPage() {
 
       {/* Sticky bar — hanya muncul saat tombol inline tidak terlihat */}
       {isSticky && (
-        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white px-4 py-3">
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-gray-200 px-4 py-2">
           <div className="max-w-7xl mx-auto space-y-3">
             <button
               type="button"
