@@ -620,6 +620,7 @@ function getStok(month, year) {
     const sisa_saldo = Number(r[6])
     const keluar_per_tanggal = []
     for (let d = 1; d <= daysInMonth; d++) keluar_per_tanggal.push(dayMap[d] || 0)
+    const total_pemakaian = keluar_per_tanggal.reduce(function(a, b) { return a + b }, 0)
     return {
       id_barang,
       kode_barang:         r[1],
@@ -628,7 +629,7 @@ function getStok(month, year) {
       satuan:              r[4],
       saldo_awal,
       sisa_saldo,
-      total_pemakaian:     saldo_awal - sisa_saldo,
+      total_pemakaian,
       days_in_month:       daysInMonth,
       keluar_per_tanggal,
     }
