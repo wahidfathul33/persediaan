@@ -62,6 +62,7 @@ export default function StokPage() {
   const totalPemakaian = filtered.reduce((sum, s) => sum + s.total_pemakaian, 0)
   const habis = filtered.filter((s) => s.sisa_saldo <= 0).length
   const isCurrentMonth = month === now.getMonth() + 1 && year === now.getFullYear()
+  const emptyColSpan = (isCurrentMonth ? 6 : 5) + daysInMonth + 2
 
   function downloadExcel() {
     const tabLabel = TABS.find((t) => t.value === activeTab)?.label ?? activeTab.toUpperCase()
@@ -218,13 +219,13 @@ export default function StokPage() {
                     <th key={i} className="px-1 py-3 text-center border border-gray-200 min-w-[30px]">{i + 1}</th>
                   ))}
                   <th className="px-3 py-3 text-right border border-gray-200 min-w-[90px] text-orange-600">Total Pakai</th>
-                  {isCurrentMonth && <th className="px-3 py-3 text-right border border-gray-200 min-w-[80px] text-blue-600">Sisa Saldo</th>}
+                  <th className="px-3 py-3 text-right border border-gray-200 min-w-[80px] text-blue-600">Sisa Saldo</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={(isCurrentMonth ? 6 : 4) + daysInMonth + (isCurrentMonth ? 2 : 1)} className="text-center py-10 text-gray-400">
+                    <td colSpan={emptyColSpan} className="text-center py-10 text-gray-400">
                       Belum ada data untuk periode ini
                     </td>
                   </tr>
@@ -246,11 +247,9 @@ export default function StokPage() {
                         </td>
                       ))}
                       <td className="px-3 py-2 text-right font-bold text-orange-600 border border-gray-100">{s.total_pemakaian}</td>
-                      {isCurrentMonth && (
-                        <td className={`px-3 py-2 text-right font-bold border border-gray-100 ${s.sisa_saldo <= 0 ? 'text-red-600' : 'text-blue-600'}`}>
-                          {s.sisa_saldo}
-                        </td>
-                      )}
+                      <td className={`px-3 py-2 text-right font-bold border border-gray-100 ${s.sisa_saldo <= 0 ? 'text-red-600' : 'text-blue-600'}`}>
+                        {s.sisa_saldo}
+                      </td>
                     </tr>
                   ))
                 )}

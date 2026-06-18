@@ -40,8 +40,34 @@ export interface StokItem {
   saldo_awal: number
   sisa_saldo: number
   total_pemakaian: number
+  total_masuk?: number
+  total_keluar?: number
   days_in_month: number
   keluar_per_tanggal: number[]
+  masuk_per_tanggal?: number[]
+}
+
+function parseStokRow(r: any): StokItem {
+  const totalKeluar = Number(r?.total_pemakaian ?? r?.total_keluar ?? 0)
+  return {
+    id_barang: String(r?.id_barang ?? ''),
+    kode_barang: String(r?.kode_barang ?? ''),
+    nama_barang: String(r?.nama_barang ?? ''),
+    merk: String(r?.merk ?? ''),
+    satuan: String(r?.satuan ?? ''),
+    saldo_awal: Number(r?.saldo_awal ?? 0),
+    sisa_saldo: Number(r?.sisa_saldo ?? 0),
+    total_pemakaian: totalKeluar,
+    total_masuk: Number(r?.total_masuk ?? 0),
+    total_keluar: Number(r?.total_keluar ?? totalKeluar),
+    days_in_month: Number(r?.days_in_month ?? 30),
+    keluar_per_tanggal: Array.isArray(r?.keluar_per_tanggal)
+      ? r.keluar_per_tanggal.map((n: unknown) => Number(n) || 0)
+      : [],
+    masuk_per_tanggal: Array.isArray(r?.masuk_per_tanggal)
+      ? r.masuk_per_tanggal.map((n: unknown) => Number(n) || 0)
+      : undefined,
+  }
 }
 
 function parseDate(val: unknown): string {
@@ -151,7 +177,9 @@ export async function deleteKeluar(type: KeluarType, id: string): Promise<void> 
 
 export async function getStokData(month: number, year: number): Promise<StokItem[]> {
   const res = await apiFetch(`${BASE_URL}?action=stok&month=${month}&year=${year}`, { cache: 'no-store' })
-  return res.json()
+  const data: unknown = await res.json()
+  if (!Array.isArray(data)) return []
+  return data.map((r) => parseStokRow(r as any))
 }
 
 // ─── Masuk ────────────────────────────────────────────────────────────────────
