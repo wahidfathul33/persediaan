@@ -20,6 +20,7 @@ export default function StokPage() {
   const [activeTab, setActiveTab] = useState<KeluarType>('atk')
   const [data, setData] = useState<StokItem[]>([])
   const [typeMap, setTypeMap] = useState<Map<string, KeluarType>>(new Map())
+  const [masterSaldoMap, setMasterSaldoMap] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
@@ -34,10 +35,15 @@ export default function StokPage() {
       ])
       setData(stok)
       const map = new Map<string, KeluarType>()
+      const saldoMap = new Map<string, number>()
       ;(['atk', 'rt', 'obat'] as KeluarType[]).forEach((t) => {
-        grouped[t].forEach((b) => map.set(b.id, t))
+        grouped[t].forEach((b) => {
+          map.set(b.id, t)
+          saldoMap.set(b.id, b.sisa_saldo)
+        })
       })
       setTypeMap(map)
+      setMasterSaldoMap(saldoMap)
     } catch {
       setError('Gagal memuat data stok.')
     } finally {
@@ -58,10 +64,15 @@ export default function StokPage() {
       String(s.merk ?? '').toLowerCase().includes(q)
   )
 
+  function getDisplayedSisaSaldo(item: StokItem): number {
+    if (!isCurrentMonth) return item.sisa_saldo
+    return masterSaldoMap.get(item.id_barang) ?? item.sisa_saldo
+  }
+
   const daysInMonth = tabData[0]?.days_in_month ?? data[0]?.days_in_month ?? 30
   const totalPemakaian = filtered.reduce((sum, s) => sum + s.total_pemakaian, 0)
-  const habis = filtered.filter((s) => s.sisa_saldo <= 0).length
   const isCurrentMonth = month === now.getMonth() + 1 && year === now.getFullYear()
+  const habis = filtered.filter((s) => getDisplayedSisaSaldo(s) <= 0).length
   const emptyColSpan = (isCurrentMonth ? 6 : 5) + daysInMonth + 2
 
   function downloadExcel() {
@@ -78,7 +89,7 @@ export default function StokPage() {
       s.saldo_awal,
       ...s.keluar_per_tanggal,
       s.total_pemakaian,
-      s.sisa_saldo,
+      getDisplayedSisaSaldo(s),
     ])
     const ws = XLSX.utils.aoa_to_sheet([headers, ...rows])
     ws['!cols'] = [
@@ -230,7 +241,9 @@ export default function StokPage() {
                     </td>
                   </tr>
                 ) : (
-                  filtered.map((s, i) => (
+                  filtered.map((s, i) => {
+                    const displayedSisaSaldo = getDisplayedSisaSaldo(s)
+                    return (
                     <tr key={`${s.id_barang}-${i}`} className="hover:bg-gray-50">
                       <td className="px-3 py-2 text-gray-500 border border-gray-100">{i + 1}</td>
                       <td className="px-3 py-2 font-mono text-xs text-gray-500 border border-gray-100">{s.kode_barang}</td>
@@ -247,11 +260,12 @@ export default function StokPage() {
                         </td>
                       ))}
                       <td className="px-3 py-2 text-right font-bold text-orange-600 border border-gray-100">{s.total_pemakaian}</td>
-                      <td className={`px-3 py-2 text-right font-bold border border-gray-100 ${s.sisa_saldo <= 0 ? 'text-red-600' : 'text-blue-600'}`}>
-                        {s.sisa_saldo}
+                      <td className={`px-3 py-2 text-right font-bold border border-gray-100 ${displayedSisaSaldo <= 0 ? 'text-red-600' : 'text-blue-600'}`}>
+                        {displayedSisaSaldo}
                       </td>
                     </tr>
-                  ))
+                    )
+                  })
                 )}
               </tbody>
             </table>

@@ -920,6 +920,11 @@ function handleGetStok(month, year) {
     return errorResponse("invalid month/year")
   }
 
+  const now = new Date()
+  const isCurrentMonth = month === (now.getMonth() + 1) && year === now.getFullYear()
+  const nextMonth = month === 12 ? 1 : (month + 1)
+  const nextYear  = month === 12 ? (year + 1) : year
+
   const daysInMonth = new Date(year, month, 0).getDate()
 
   // 1. Read all barang (all types)
@@ -932,6 +937,8 @@ function handleGetStok(month, year) {
 
   // 2. Build snapshot map for requested month (for historical saldo_awal)
   const snapshotMap = buildSnapshotMap(year, month)
+  // Fallback for past months: derive saldo_awal from next month snapshot if available
+  const nextSnapshotMap = isCurrentMonth ? {} : buildSnapshotMap(nextYear, nextMonth)
 
   // 3. Aggregate keluar per barang per day for the requested month
   const keluarByBarang = {}   // { id_barang: { day: totalQty } }
@@ -965,10 +972,6 @@ function handleGetStok(month, year) {
     const r          = item.row
     const id_barang  = String(r[0])
 
-    // saldo_awal: prefer snapshot, fall back to master sheet col F
-    const snapshotVal = lookupSnapshot(snapshotMap, type, id_barang)
-    const saldo_awal  = snapshotVal !== null ? snapshotVal : (Number(r[5]) || 0)
-
     // keluar per day array [day1, day2, ..., dayN]
     const keluarDayMap        = keluarByBarang[id_barang] || {}
     const masukDayMap         = masukByBarang[id_barang]  || {}
@@ -987,7 +990,28 @@ function handleGetStok(month, year) {
       total_masuk  += m
     }
 
-    const sisa_saldo = saldo_awal + total_masuk - total_keluar
+    // saldo_awal source priority:
+    // 1) snapshot bulan diminta
+    // 2) (bulan lewat) turunan snapshot bulan berikutnya: saldo_awal = snapshot_next - masuk + keluar
+    // 3) fallback master sheet col F
+    const snapshotVal     = lookupSnapshot(snapshotMap, type, id_barang)
+    const nextSnapshotVal = isCurrentMonth ? null : lookupSnapshot(nextSnapshotMap, type, id_barang)
+
+    let saldo_awal = 0
+    let saldo_awal_source = "master_fallback"
+    if (snapshotVal !== null) {
+      saldo_awal = snapshotVal
+      saldo_awal_source = "snapshot"
+    } else if (nextSnapshotVal !== null) {
+      saldo_awal = (Number(nextSnapshotVal) || 0) - total_masuk + total_keluar
+      saldo_awal_source = "derived_from_next_snapshot"
+    } else {
+      saldo_awal = Number(r[5]) || 0
+    }
+
+    const computed_sisa_saldo = saldo_awal + total_masuk - total_keluar
+    const live_sisa_saldo     = Number(r[6]) || 0
+    const sisa_saldo          = isCurrentMonth ? live_sisa_saldo : computed_sisa_saldo
 
     return {
       id_barang,
@@ -1004,6 +1028,8 @@ function handleGetStok(month, year) {
       keluar_per_tanggal,
       masuk_per_tanggal,
       saldo_awal_from_snapshot: snapshotVal !== null,
+      saldo_awal_source,
+      sisa_saldo_source: isCurrentMonth ? "live_master" : "computed_period",
     }
   })
 

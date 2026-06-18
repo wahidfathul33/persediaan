@@ -42,6 +42,7 @@ export interface StokItem {
   total_pemakaian: number
   total_masuk?: number
   total_keluar?: number
+  saldo_awal_source?: string
   days_in_month: number
   keluar_per_tanggal: number[]
   masuk_per_tanggal?: number[]
@@ -60,6 +61,7 @@ function parseStokRow(r: any): StokItem {
     total_pemakaian: totalKeluar,
     total_masuk: Number(r?.total_masuk ?? 0),
     total_keluar: Number(r?.total_keluar ?? totalKeluar),
+    saldo_awal_source: String(r?.saldo_awal_source ?? ''),
     days_in_month: Number(r?.days_in_month ?? 30),
     keluar_per_tanggal: Array.isArray(r?.keluar_per_tanggal)
       ? r.keluar_per_tanggal.map((n: unknown) => Number(n) || 0)
