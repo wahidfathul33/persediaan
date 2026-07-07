@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import * as XLSX from 'xlsx'
 import { RefreshCw, Download } from 'lucide-react'
 import { getStokData, getBarangGrouped, type StokItem, type KeluarType } from '@/lib/api'
@@ -23,15 +23,20 @@ export default function StokPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
+  const abortRef = useRef<AbortController | null>(null)
+  const requestSeqRef = useRef(0)
 
-  async function load() {
+  const load = useCallback(async (targetMonth: number, targetYear: number, signal: AbortSignal, requestSeq: number) => {
     setLoading(true)
     setError('')
     try {
       const [stok, grouped] = await Promise.all([
-        getStokData(month, year),
-        getBarangGrouped(),
+        getStokData(targetMonth, targetYear, { signal }),
+        getBarangGrouped({ signal }),
       ])
+
+      if (signal.aborted || requestSeq !== requestSeqRef.current) return
+
       setData(stok)
       const saldoMap = new Map<string, number>()
       ;(['atk', 'rt', 'obat'] as KeluarType[]).forEach((t) => {
@@ -40,15 +45,34 @@ export default function StokPage() {
         })
       })
       setMasterSaldoMap(saldoMap)
-    } catch {
+    } catch (err) {
+      if (signal.aborted || requestSeq !== requestSeqRef.current) return
+      if (err instanceof DOMException && err.name === 'AbortError') return
       setError('Gagal memuat data stok.')
     } finally {
-      setLoading(false)
+      if (!signal.aborted && requestSeq === requestSeqRef.current) {
+        setLoading(false)
+      }
     }
-  }
+  }, [])
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [month, year])
+  const loadForPeriod = useCallback((targetMonth: number, targetYear: number) => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    const requestSeq = requestSeqRef.current + 1
+    requestSeqRef.current = requestSeq
+
+    void load(targetMonth, targetYear, controller.signal, requestSeq)
+  }, [load])
+
+  useEffect(() => {
+    loadForPeriod(month, year)
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [month, year, loadForPeriod])
 
   const tabData = data.filter((s) => s.type === activeTab)
 
@@ -102,7 +126,7 @@ export default function StokPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Laporan Stok</h1>
-        <button onClick={load} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors">
+        <button onClick={() => loadForPeriod(month, year)} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors">
           <RefreshCw size={14} /> Refresh
         </button>
       </div>

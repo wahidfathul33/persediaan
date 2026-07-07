@@ -101,6 +101,10 @@ async function apiFetch(input: RequestInfo, init?: RequestInit) {
   return res
 }
 
+interface FetchOptions {
+  signal?: AbortSignal
+}
+
 function parseBarangRow(r: unknown[]): Barang {
   return {
     id: String(r[0]),
@@ -121,8 +125,11 @@ export async function pingAPI(): Promise<void> {
   }
 }
 
-export async function getBarangGrouped(): Promise<BarangGrouped> {
-  const res = await apiFetch(`${BASE_URL}?action=barang`, { cache: 'no-store' })
+export async function getBarangGrouped(options?: FetchOptions): Promise<BarangGrouped> {
+  const res = await apiFetch(`${BASE_URL}?action=barang`, {
+    cache: 'no-store',
+    signal: options?.signal,
+  })
   const data: Record<KeluarType, unknown[][]> = await res.json()
   return {
     atk: (data.atk ?? []).map(parseBarangRow),
@@ -137,10 +144,13 @@ export async function getBarang(type: KeluarType): Promise<Barang[]> {
   return data.map(parseBarangRow)
 }
 
-export async function getKeluar(type: KeluarType, month?: number, year?: number): Promise<Keluar[]> {
+export async function getKeluar(type: KeluarType, month?: number, year?: number, options?: FetchOptions): Promise<Keluar[]> {
   let url = `${BASE_URL}?action=keluar&type=${type}`
   if (month && year) url += `&month=${month}&year=${year}`
-  const res = await apiFetch(url, { cache: 'no-store' })
+  const res = await apiFetch(url, {
+    cache: 'no-store',
+    signal: options?.signal,
+  })
   const data: unknown[][] = await res.json()
   return data.map((r) => ({
     id: String(r[0]),
@@ -185,8 +195,11 @@ export async function deleteKeluar(type: KeluarType, id: string): Promise<void> 
   await postJSON({ id, type, action: 'delete' })
 }
 
-export async function getStokData(month: number, year: number): Promise<StokItem[]> {
-  const res = await apiFetch(`${BASE_URL}?action=stok&month=${month}&year=${year}`, { cache: 'no-store' })
+export async function getStokData(month: number, year: number, options?: FetchOptions): Promise<StokItem[]> {
+  const res = await apiFetch(`${BASE_URL}?action=stok&month=${month}&year=${year}`, {
+    cache: 'no-store',
+    signal: options?.signal,
+  })
   const data: unknown = await res.json()
   if (!Array.isArray(data)) return []
   return data.map((r) => parseStokRow(r))
@@ -207,10 +220,13 @@ export interface Masuk {
   keterangan: string
 }
 
-export async function getMasuk(type: KeluarType, month?: number, year?: number): Promise<Masuk[]> {
+export async function getMasuk(type: KeluarType, month?: number, year?: number, options?: FetchOptions): Promise<Masuk[]> {
   let url = `${BASE_URL}?action=masuk&type=${type}`
   if (month && year) url += `&month=${month}&year=${year}`
-  const res = await apiFetch(url, { cache: 'no-store' })
+  const res = await apiFetch(url, {
+    cache: 'no-store',
+    signal: options?.signal,
+  })
   const data: unknown[][] = await res.json()
   return data.map((r) => ({
     id: String(r[0]),

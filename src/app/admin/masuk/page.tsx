@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, Plus } from 'lucide-react'
 import { getMasuk, getBarangGrouped, addMasukBatch, updateMasuk, deleteMasuk, pingAPI, type Masuk, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
@@ -174,27 +174,53 @@ export default function MasukPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [toast, setToast] = useState('')
+  const abortRef = useRef<AbortController | null>(null)
+  const requestSeqRef = useRef(0)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (targetMonth: number, targetYear: number, signal: AbortSignal, requestSeq: number) => {
     setLoading(true)
     setError('')
     try {
       const [atkData, rtData, obatData, grouped] = await Promise.all([
-        getMasuk('atk', month, year),
-        getMasuk('rt', month, year),
-        getMasuk('obat', month, year),
-        getBarangGrouped(),
+        getMasuk('atk', targetMonth, targetYear, { signal }),
+        getMasuk('rt', targetMonth, targetYear, { signal }),
+        getMasuk('obat', targetMonth, targetYear, { signal }),
+        getBarangGrouped({ signal }),
       ])
+
+      if (signal.aborted || requestSeq !== requestSeqRef.current) return
+
       setAllMasuk({ atk: atkData, rt: rtData, obat: obatData })
       setBarangGrouped(grouped)
-    } catch {
+    } catch (err) {
+      if (signal.aborted || requestSeq !== requestSeqRef.current) return
+      if (err instanceof DOMException && err.name === 'AbortError') return
       setError('Gagal memuat data.')
     } finally {
-      setLoading(false)
+      if (!signal.aborted && requestSeq === requestSeqRef.current) {
+        setLoading(false)
+      }
     }
-  }, [month, year])
+  }, [])
 
-  useEffect(() => { setPage(1); load() }, [load])
+  const loadForPeriod = useCallback((targetMonth: number, targetYear: number) => {
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    const requestSeq = requestSeqRef.current + 1
+    requestSeqRef.current = requestSeq
+
+    void load(targetMonth, targetYear, controller.signal, requestSeq)
+  }, [load])
+
+  useEffect(() => {
+    setPage(1)
+    loadForPeriod(month, year)
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [month, year, loadForPeriod])
 
   // Ping setiap 4 menit untuk mencegah GAS cold start
   useEffect(() => {
@@ -266,7 +292,7 @@ export default function MasukPage() {
         await addMasukBatch(activeType, items)
       }
       setModalOpen(false)
-      await load()
+      loadForPeriod(month, year)
     } catch {
       alert('Gagal menyimpan data.')
     } finally {
@@ -280,7 +306,7 @@ export default function MasukPage() {
     try {
       await deleteMasuk(activeType, deleteId)
       setDeleteId(null)
-      await load()
+      loadForPeriod(month, year)
     } catch {
       alert('Gagal menghapus data.')
     } finally {
@@ -311,7 +337,7 @@ export default function MasukPage() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-900">Persediaan Masuk</h1>
-        <button onClick={load} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors">
+        <button onClick={() => loadForPeriod(month, year)} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors">
           <RefreshCw size={14} /> Refresh
         </button>
       </div>
