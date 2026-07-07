@@ -33,6 +33,7 @@ export interface Keluar {
 
 export interface StokItem {
   id_barang: string
+  type: KeluarType
   kode_barang: string
   nama_barang: string
   merk: string
@@ -48,26 +49,33 @@ export interface StokItem {
   masuk_per_tanggal?: number[]
 }
 
-function parseStokRow(r: any): StokItem {
-  const totalKeluar = Number(r?.total_pemakaian ?? r?.total_keluar ?? 0)
+function parseStokRow(r: unknown): StokItem {
+  const row: Record<string, unknown> =
+    r && typeof r === 'object' ? (r as Record<string, unknown>) : {}
+
+  const rawType = String(row.type ?? '').toLowerCase()
+  const type: KeluarType = rawType === 'atk' || rawType === 'rt' || rawType === 'obat' ? rawType : 'atk'
+  const totalKeluar = Number(row.total_pemakaian ?? row.total_keluar ?? 0)
+  const keluarPerTanggal = Array.isArray(row.keluar_per_tanggal) ? row.keluar_per_tanggal : []
+  const masukPerTanggal = Array.isArray(row.masuk_per_tanggal) ? row.masuk_per_tanggal : undefined
+
   return {
-    id_barang: String(r?.id_barang ?? ''),
-    kode_barang: String(r?.kode_barang ?? ''),
-    nama_barang: String(r?.nama_barang ?? ''),
-    merk: String(r?.merk ?? ''),
-    satuan: String(r?.satuan ?? ''),
-    saldo_awal: Number(r?.saldo_awal ?? 0),
-    sisa_saldo: Number(r?.sisa_saldo ?? 0),
+    id_barang: String(row.id_barang ?? ''),
+    type,
+    kode_barang: String(row.kode_barang ?? ''),
+    nama_barang: String(row.nama_barang ?? ''),
+    merk: String(row.merk ?? ''),
+    satuan: String(row.satuan ?? ''),
+    saldo_awal: Number(row.saldo_awal ?? 0),
+    sisa_saldo: Number(row.sisa_saldo ?? 0),
     total_pemakaian: totalKeluar,
-    total_masuk: Number(r?.total_masuk ?? 0),
-    total_keluar: Number(r?.total_keluar ?? totalKeluar),
-    saldo_awal_source: String(r?.saldo_awal_source ?? ''),
-    days_in_month: Number(r?.days_in_month ?? 30),
-    keluar_per_tanggal: Array.isArray(r?.keluar_per_tanggal)
-      ? r.keluar_per_tanggal.map((n: unknown) => Number(n) || 0)
-      : [],
-    masuk_per_tanggal: Array.isArray(r?.masuk_per_tanggal)
-      ? r.masuk_per_tanggal.map((n: unknown) => Number(n) || 0)
+    total_masuk: Number(row.total_masuk ?? 0),
+    total_keluar: Number(row.total_keluar ?? totalKeluar),
+    saldo_awal_source: String(row.saldo_awal_source ?? ''),
+    days_in_month: Number(row.days_in_month ?? 30),
+    keluar_per_tanggal: keluarPerTanggal.map((n: unknown) => Number(n) || 0),
+    masuk_per_tanggal: masukPerTanggal
+      ? masukPerTanggal.map((n: unknown) => Number(n) || 0)
       : undefined,
   }
 }
@@ -181,7 +189,7 @@ export async function getStokData(month: number, year: number): Promise<StokItem
   const res = await apiFetch(`${BASE_URL}?action=stok&month=${month}&year=${year}`, { cache: 'no-store' })
   const data: unknown = await res.json()
   if (!Array.isArray(data)) return []
-  return data.map((r) => parseStokRow(r as any))
+  return data.map((r) => parseStokRow(r))
 }
 
 // ─── Masuk ────────────────────────────────────────────────────────────────────

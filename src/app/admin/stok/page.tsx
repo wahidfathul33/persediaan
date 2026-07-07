@@ -19,7 +19,6 @@ export default function StokPage() {
   const [year, setYear] = useState(now.getFullYear())
   const [activeTab, setActiveTab] = useState<KeluarType>('atk')
   const [data, setData] = useState<StokItem[]>([])
-  const [typeMap, setTypeMap] = useState<Map<string, KeluarType>>(new Map())
   const [masterSaldoMap, setMasterSaldoMap] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -34,15 +33,12 @@ export default function StokPage() {
         getBarangGrouped(),
       ])
       setData(stok)
-      const map = new Map<string, KeluarType>()
       const saldoMap = new Map<string, number>()
       ;(['atk', 'rt', 'obat'] as KeluarType[]).forEach((t) => {
         grouped[t].forEach((b) => {
-          map.set(b.id, t)
-          saldoMap.set(b.id, b.sisa_saldo)
+          saldoMap.set(`${t}|${b.id}`, b.sisa_saldo)
         })
       })
-      setTypeMap(map)
       setMasterSaldoMap(saldoMap)
     } catch {
       setError('Gagal memuat data stok.')
@@ -54,7 +50,7 @@ export default function StokPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [month, year])
 
-  const tabData = data.filter((s) => typeMap.get(s.id_barang) === activeTab)
+  const tabData = data.filter((s) => s.type === activeTab)
 
   const q = search.toLowerCase()
   const filtered = tabData.filter(
@@ -66,7 +62,7 @@ export default function StokPage() {
 
   function getDisplayedSisaSaldo(item: StokItem): number {
     if (!isCurrentMonth) return item.sisa_saldo
-    return masterSaldoMap.get(item.id_barang) ?? item.sisa_saldo
+    return masterSaldoMap.get(`${item.type}|${item.id_barang}`) ?? item.sisa_saldo
   }
 
   const daysInMonth = tabData[0]?.days_in_month ?? data[0]?.days_in_month ?? 30
@@ -126,7 +122,7 @@ export default function StokPage() {
             {t.label}
             {!loading && (
               <span className="ml-1.5 text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded-full">
-                {data.filter((s) => typeMap.get(s.id_barang) === t.value).length}
+                {data.filter((s) => s.type === t.value).length}
               </span>
             )}
           </button>
