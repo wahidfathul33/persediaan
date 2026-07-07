@@ -69,7 +69,7 @@ export default function StokPage() {
   const totalPemakaian = filtered.reduce((sum, s) => sum + s.total_pemakaian, 0)
   const isCurrentMonth = month === now.getMonth() + 1 && year === now.getFullYear()
   const habis = filtered.filter((s) => getDisplayedSisaSaldo(s) <= 0).length
-  const emptyColSpan = (isCurrentMonth ? 6 : 5) + daysInMonth + 2
+  const emptyColSpan = 6 + daysInMonth + 2
 
   function downloadExcel() {
     const tabLabel = TABS.find((t) => t.value === activeTab)?.label ?? activeTab.toUpperCase()
@@ -221,7 +221,7 @@ export default function StokPage() {
                   <th className="px-3 py-3 text-left border border-gray-200 min-w-[160px]">Nama Barang</th>
                   <th className="px-3 py-3 text-left border border-gray-200 min-w-[80px]">Merk</th>
                   <th className="px-3 py-3 text-left border border-gray-200 min-w-[60px]">Satuan</th>
-                  {isCurrentMonth && <th className="px-3 py-3 text-right border border-gray-200 min-w-[70px]">Saldo Awal</th>}
+                  <th className="px-3 py-3 text-right border border-gray-200 min-w-[70px]">Saldo Awal</th>
                   {Array.from({ length: daysInMonth }, (_, i) => (
                     <th key={i} className="px-1 py-3 text-center border border-gray-200 min-w-[30px]">{i + 1}</th>
                   ))}
@@ -246,7 +246,7 @@ export default function StokPage() {
                       <td className="px-3 py-2 font-medium text-gray-800 border border-gray-100">{s.nama_barang}</td>
                       <td className="px-3 py-2 text-gray-600 border border-gray-100">{s.merk}</td>
                       <td className="px-3 py-2 text-gray-600 border border-gray-100">{s.satuan}</td>
-                      {isCurrentMonth && <td className="px-3 py-2 text-right font-medium text-gray-700 border border-gray-100">{s.saldo_awal}</td>}
+                      <td className="px-3 py-2 text-right font-medium text-gray-700 border border-gray-100">{s.saldo_awal}</td>
                       {s.keluar_per_tanggal.map((qty, d) => (
                         <td
                           key={d}
