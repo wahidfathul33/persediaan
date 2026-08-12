@@ -95,10 +95,33 @@ function parseDate(val: unknown): string {
   return s
 }
 
+// Apps Script sesekali membalas 404 dari host redirect script.googleusercontent.com
+// walau deployment-nya sehat. Error ini transien, jadi GET diulang beberapa kali.
+const RETRY_DELAYS_MS = [600, 1500, 3000]
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 async function apiFetch(input: RequestInfo, init?: RequestInit) {
-  const res = await fetch(input, init)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res
+  // POST tidak boleh diulang otomatis — berisiko dobel tulis ke sheet.
+  const canRetry = !init?.method || init.method.toUpperCase() === 'GET'
+  const attempts = canRetry ? RETRY_DELAYS_MS.length + 1 : 1
+
+  let lastError: unknown
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await sleep(RETRY_DELAYS_MS[i - 1])
+    try {
+      const res = await fetch(input, init)
+      if (res.ok) return res
+      lastError = new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      // Abort dari pemanggil bukan kegagalan jaringan — jangan diulang.
+      if (err instanceof DOMException && err.name === 'AbortError') throw err
+      lastError = err
+    }
+  }
+  throw lastError
 }
 
 interface FetchOptions {
@@ -117,19 +140,16 @@ function parseBarangRow(r: unknown[]): Barang {
   }
 }
 
-export async function pingAPI(): Promise<void> {
+export async function pingAPI(options?: FetchOptions): Promise<void> {
   try {
-    await fetch(`${BASE_URL}?action=ping`, { cache: 'no-store' })
+    await fetch(`${BASE_URL}?action=ping`, { cache: 'no-store', signal: options?.signal })
   } catch {
     // ignore — fire and forget
   }
 }
 
 export async function getBarangGrouped(options?: FetchOptions): Promise<BarangGrouped> {
-  const res = await apiFetch(`${BASE_URL}?action=barang`, {
-    cache: 'no-store',
-    signal: options?.signal,
-  })
+  const res = await apiFetch(`${BASE_URL}?action=barang`, { cache: 'no-store', signal: options?.signal })
   const data: Record<KeluarType, unknown[][]> = await res.json()
   return {
     atk: (data.atk ?? []).map(parseBarangRow),
@@ -147,10 +167,7 @@ export async function getBarang(type: KeluarType): Promise<Barang[]> {
 export async function getKeluar(type: KeluarType, month?: number, year?: number, options?: FetchOptions): Promise<Keluar[]> {
   let url = `${BASE_URL}?action=keluar&type=${type}`
   if (month && year) url += `&month=${month}&year=${year}`
-  const res = await apiFetch(url, {
-    cache: 'no-store',
-    signal: options?.signal,
-  })
+  const res = await apiFetch(url, { cache: 'no-store', signal: options?.signal })
   const data: unknown[][] = await res.json()
   return data.map((r) => ({
     id: String(r[0]),
@@ -196,10 +213,7 @@ export async function deleteKeluar(type: KeluarType, id: string): Promise<void> 
 }
 
 export async function getStokData(month: number, year: number, options?: FetchOptions): Promise<StokItem[]> {
-  const res = await apiFetch(`${BASE_URL}?action=stok&month=${month}&year=${year}`, {
-    cache: 'no-store',
-    signal: options?.signal,
-  })
+  const res = await apiFetch(`${BASE_URL}?action=stok&month=${month}&year=${year}`, { cache: 'no-store', signal: options?.signal })
   const data: unknown = await res.json()
   if (!Array.isArray(data)) return []
   return data.map((r) => parseStokRow(r))
@@ -223,10 +237,7 @@ export interface Masuk {
 export async function getMasuk(type: KeluarType, month?: number, year?: number, options?: FetchOptions): Promise<Masuk[]> {
   let url = `${BASE_URL}?action=masuk&type=${type}`
   if (month && year) url += `&month=${month}&year=${year}`
-  const res = await apiFetch(url, {
-    cache: 'no-store',
-    signal: options?.signal,
-  })
+  const res = await apiFetch(url, { cache: 'no-store', signal: options?.signal })
   const data: unknown[][] = await res.json()
   return data.map((r) => ({
     id: String(r[0]),

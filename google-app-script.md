@@ -1,7 +1,7 @@
 /**
  * ============================================================
  *  INVENTORY MANAGEMENT — Google Apps Script
- *  Production-ready | v3.1
+ *  Production-ready | v3.2
  * ============================================================
  *
  *  SETUP:
@@ -42,6 +42,31 @@
  *
  *  Fix fillSnapshotDerived (utility manual):
  *    Range aggregate diubah inklusif prior snapshot (sama dengan fix HIGH di atas).
+ *
+ *  CHANGELOG v3.2 (PERFORMA — tidak mengubah hasil perhitungan):
+ *  Masalah: satu request action=stok butuh 10–38 detik karena sheet yang sama
+ *  dibaca berulang kali. Hitungan getRange().getValues() di v3.1:
+ *    3 (barang) + 2 (snapshot) + s/d 24 (findNearestPriorSnapshot!) +
+ *    6 (aggregateTransaksiBetween) + 3 (keluar) + 3 (masuk) = s/d 41 kali.
+ *
+ *  - Memo per-eksekusi (_memo): tiap sheet dibaca maksimal SEKALI per request.
+ *    Objek global Apps Script dibuat ulang tiap eksekusi, jadi tidak ada
+ *    kebocoran data antar request.
+ *  - getSnapshotIndex(): sheet Snapshot Saldo dibaca sekali lalu diindeks
+ *    per "tahun*100+bulan". buildSnapshotMap() dan findNearestPriorSnapshot()
+ *    jadi murni operasi memori — dari s/d 26 pembacaan sheet menjadi 1.
+ *  - aggregateTransaksiBetween() dan handleGetStok() berbagi baris masuk/keluar
+ *    yang sama lewat memo — dari 12 pembacaan menjadi 6.
+ *  - handleGetStok() memakai getBarangRows() (CacheService) — 3 pembacaan hilang
+ *    saat cache hangat.
+ *  Total: s/d 41 pembacaan sheet → 7 saat dingin, 4 saat cache barang hangat.
+ *
+ *  - Cache hasil laporan stok (chunked, TTL 6 jam). Payload ~255 KB melewati
+ *    batas 100 KB per key CacheService, jadi dipecah per 50.000 karakter.
+ *    Invalidasi memakai penghitung generasi STOK_GEN di Script Properties yang
+ *    dinaikkan setiap ada POST — jadi data tidak pernah basi setelah input.
+ *  - resetMemo() dipanggil setelah saveSnapshot()/fillSnapshotDerived() menulis,
+ *    supaya verifikasi setelahnya membaca data yang baru, bukan memo lama.
  * ============================================================
  */
 
@@ -118,6 +143,48 @@ function readRows(sheet) {
   return sheet.getRange(2, 1, lastRow - 1, lastCol).getValues()
 }
 
+// ── Memo per-eksekusi (v3.2) ─────────────────────────────────────────────────
+//
+// Setiap eksekusi Apps Script memakai konteks global yang baru, jadi objek ini
+// otomatis kosong lagi di request berikutnya — tidak ada risiko data basi antar
+// request. Tujuannya cuma satu: satu sheet dibaca maksimal sekali per request.
+
+const _memo = {}
+
+function resetMemo() {
+  Object.keys(_memo).forEach(function(k) { delete _memo[k] })
+}
+
+function readRowsMemo(key, sheet) {
+  if (_memo[key] === undefined) _memo[key] = readRows(sheet)
+  return _memo[key]
+}
+
+function masukRowsOf(type)  { return readRowsMemo("masuk|"  + type, getMasukSheet(type))  }
+function keluarRowsOf(type) { return readRowsMemo("keluar|" + type, getKeluarSheet(type)) }
+function snapshotRowsAll()  { return readRowsMemo("snapshot", SHEETS.snapshot)            }
+
+/**
+ * Index seluruh sheet Snapshot Saldo sekali per request.
+ * Key luar: tahun*100 + bulan   Key dalam: "type|id_barang"   Value: saldo_awal
+ *
+ * Ini yang membuat findNearestPriorSnapshot() — yang di v3.1 bisa membaca sheet
+ * snapshot 24 kali berturut-turut — jadi murni lookup memori.
+ */
+function getSnapshotIndex() {
+  if (_memo.snapshotIndex) return _memo.snapshotIndex
+
+  const idx = {}
+  snapshotRowsAll().forEach(function(r) {
+    const ym = Number(r[0]) * 100 + Number(r[1])
+    if (!idx[ym]) idx[ym] = {}
+    idx[ym][String(r[2]) + "|" + String(r[3])] = Number(r[4]) || 0
+  })
+
+  _memo.snapshotIndex = idx
+  return idx
+}
+
 /**
  * Build O(1) lookup map from barang rows.
  * Key: id_barang (string)
@@ -189,6 +256,80 @@ function getBarangRows(type) {
   return rows
 }
 
+// ── Cache hasil laporan stok (v3.2) ──────────────────────────────────────────
+//
+// action=stok menghasilkan ~255 KB JSON, di atas batas 100 KB per key
+// CacheService — jadi JSON dipecah jadi beberapa chunk.
+//
+// Invalidasi memakai penghitung generasi di Script Properties, bukan penghapusan
+// key satu per satu: setiap POST menaikkan STOK_GEN sehingga semua key generasi
+// lama tidak akan pernah terbaca lagi (dan hilang sendiri saat TTL habis).
+// Konsekuensinya laporan stok tidak pernah menampilkan data basi setelah input.
+
+const STOK_CACHE_TTL  = 21600   // 6 jam
+const STOK_CHUNK_SIZE = 50000   // karakter; aman terhadap batas 100 KB per key
+const STOK_MAX_CHUNKS = 20      // di atas ini, lewati caching daripada boros kuota
+
+function _stokGen() {
+  try {
+    return PropertiesService.getScriptProperties().getProperty("STOK_GEN") || "0"
+  } catch (e) { return "0" }
+}
+
+/** Naikkan generasi → seluruh cache stok yang lama otomatis tidak terpakai. */
+function bumpStokGen() {
+  try {
+    const props = PropertiesService.getScriptProperties()
+    const next  = (Number(props.getProperty("STOK_GEN")) || 0) + 1
+    props.setProperty("STOK_GEN", String(next))
+  } catch (e) { /* cache is optional, fail silently */ }
+}
+
+function _stokCacheKey(year, month) {
+  return "stok_v32_" + _stokGen() + "_" + year + "_" + month
+}
+
+/** @returns {string|null} JSON utuh, atau null jika belum/tidak lengkap di cache. */
+function getStokCached(year, month) {
+  try {
+    const cache = CacheService.getScriptCache()
+    const base  = _stokCacheKey(year, month)
+    const n     = Number(cache.get(base + "_n"))
+    if (!n) return null
+
+    const keys = []
+    for (let i = 0; i < n; i++) keys.push(base + "_" + i)
+    const parts = cache.getAll(keys)
+
+    let out = ""
+    for (let i = 0; i < n; i++) {
+      const p = parts[base + "_" + i]
+      // Satu chunk kedaluwarsa duluan = hasil tidak utuh → hitung ulang.
+      if (p === undefined || p === null) return null
+      out += p
+    }
+    return out
+  } catch (e) { return null }
+}
+
+function setStokCache(year, month, json) {
+  try {
+    const cache  = CacheService.getScriptCache()
+    const base   = _stokCacheKey(year, month)
+    const chunks = {}
+    let   n      = 0
+
+    for (let i = 0; i < json.length; i += STOK_CHUNK_SIZE) {
+      chunks[base + "_" + n] = json.substring(i, i + STOK_CHUNK_SIZE)
+      n++
+    }
+    if (n === 0 || n > STOK_MAX_CHUNKS) return
+
+    chunks[base + "_n"] = String(n)
+    cache.putAll(chunks, STOK_CACHE_TTL)
+  } catch (e) { /* cache is optional, fail silently */ }
+}
+
 // ── Snapshot Saldo ────────────────────────────────────────────────────────────
 
 /**
@@ -226,6 +367,9 @@ function saveSnapshot(year, month) {
 
   if (newRows.length > 0) {
     batchInsertRows(snapshotSheet, newRows)
+    // Memo dan index snapshot sudah basi setelah tulis — buang supaya verifikasi
+    // di rolloverSaldo() membaca data yang baru.
+    resetMemo()
     Logger.log("[SNAPSHOT] Saved " + newRows.length + " rows for " + year + "-" + month)
   } else {
     Logger.log("[SNAPSHOT] No new rows for " + year + "-" + month + " (already exists or empty)")
@@ -235,20 +379,13 @@ function saveSnapshot(year, month) {
 /**
  * Build snapshot map for a given (year, month).
  * Key: "type|id_barang"  Value: saldo_awal
+ *
+ * v3.2: dilayani dari getSnapshotIndex() — tidak lagi membaca sheet tiap panggil.
+ * Map yang dikembalikan milik index bersama, jadi HANYA UNTUK DIBACA.
  */
 function buildSnapshotMap(year, month) {
-  const snapshotSheet = SHEETS.snapshot
-  if (!snapshotSheet) return {}
-
-  const rows = readRows(snapshotSheet)
-  const map  = {}
-  rows.forEach(function(r) {
-    if (Number(r[0]) === year && Number(r[1]) === month) {
-      const key = String(r[2]) + "|" + String(r[3])
-      map[key]  = Number(r[4]) || 0
-    }
-  })
-  return map
+  if (!SHEETS.snapshot) return {}
+  return getSnapshotIndex()[year * 100 + month] || {}
 }
 
 /**
@@ -308,12 +445,14 @@ function aggregateTransaksiBetween(fromYear, fromMonth, toYear, toMonth) {
     return curNum >= fromNum && curNum < toNum
   }
 
+  // v3.2: baris masuk/keluar diambil lewat memo — sheet yang sama juga dipakai
+  // handleGetStok, jadi cukup dibaca sekali per request.
   VALID_TYPES.forEach(function(type) {
-    readRows(getMasukSheet(type)).forEach(function(r) {
+    masukRowsOf(type).forEach(function(r) {
       if (!inRange(r[6])) return
       addEntry(type, String(r[1]).trim(), "masuk", Number(r[7]) || 0)
     })
-    readRows(getKeluarSheet(type)).forEach(function(r) {
+    keluarRowsOf(type).forEach(function(r) {
       if (!inRange(r[6])) return
       addEntry(type, String(r[1]).trim(), "keluar", Number(r[7]) || 0)
     })
@@ -444,7 +583,9 @@ function doPost(e) {
     const type   = data.type
 
     if (action === "rollover") {
-      return jsonResponse({ status: rolloverSaldo(data.cronSecret) ? "success" : "unauthorized" })
+      const ok = rolloverSaldo(data.cronSecret)
+      if (ok) bumpStokGen()
+      return jsonResponse({ status: ok ? "success" : "unauthorized" })
     }
 
     if (!action || VALID_ACTIONS_POST.indexOf(action) === -1) {
@@ -473,7 +614,12 @@ function doPost(e) {
     }
 
     try {
-      return dispatch(action, type, sheet, data)
+      const res = dispatch(action, type, sheet, data)
+      // Semua action POST berpotensi mengubah angka laporan stok. Dinaikkan tanpa
+      // memeriksa sukses/gagal — invalidasi berlebih cuma memicu hitung ulang,
+      // sedangkan invalidasi yang terlewat menyajikan data basi.
+      bumpStokGen()
+      return res
     } finally {
       lock.releaseLock()
     }
@@ -957,6 +1103,15 @@ function handleGetStok(month, year) {
     return errorResponse("invalid month/year")
   }
 
+  // v3.2: hasil yang sudah dihitung dilayani langsung tanpa menyentuh sheet.
+  // Cache dibuang otomatis begitu ada POST (lihat bumpStokGen di doPost).
+  const cachedJson = getStokCached(year, month)
+  if (cachedJson) {
+    Logger.log("[CACHE] getStok " + year + "-" + month + " HIT")
+    _te(t)
+    return ContentService.createTextOutput(cachedJson).setMimeType(ContentService.MimeType.JSON)
+  }
+
   const now            = new Date()
   const isCurrentMonth = month === (now.getMonth() + 1) && year === now.getFullYear()
   const nextMonth      = month === 12 ? 1 : month + 1
@@ -964,9 +1119,11 @@ function handleGetStok(month, year) {
   const daysInMonth    = new Date(year, month, 0).getDate()
 
   // ── 1. Read all barang ──────────────────────────────────────────────────────
+  // v3.2: getBarangRows() melewati CacheService, dan cache itu selalu dibersihkan
+  // oleh clearBarangCache() setiap ada tulis — jadi kolom G tetap akurat.
   const barangData = []
   VALID_TYPES.forEach(function(type) {
-    readRows(getBarangSheet(type)).forEach(function(r) {
+    getBarangRows(type).forEach(function(r) {
       barangData.push({ type: type, row: r })
     })
   })
@@ -1009,7 +1166,7 @@ function handleGetStok(month, year) {
   // key: "type|id_barang" (FIX v3.1 MEDIUM)
   const keluarByBarang = {}
   VALID_TYPES.forEach(function(type) {
-    readRows(getKeluarSheet(type)).forEach(function(r) {
+    keluarRowsOf(type).forEach(function(r) {
       const d = new Date(r[6])
       if (d.getMonth() + 1 !== month || d.getFullYear() !== year) return
       const key = type + "|" + String(r[1]).trim()
@@ -1023,7 +1180,7 @@ function handleGetStok(month, year) {
   // key: "type|id_barang" (FIX v3.1 MEDIUM)
   const masukByBarang = {}
   VALID_TYPES.forEach(function(type) {
-    readRows(getMasukSheet(type)).forEach(function(r) {
+    masukRowsOf(type).forEach(function(r) {
       const d = new Date(r[6])
       if (d.getMonth() + 1 !== month || d.getFullYear() !== year) return
       const key = type + "|" + String(r[1]).trim()
@@ -1105,8 +1262,11 @@ function handleGetStok(month, year) {
     }
   })
 
+  const json = JSON.stringify(result)
+  setStokCache(year, month, json)
+
   _te(t)
-  return jsonResponse(result)
+  return ContentService.createTextOutput(json).setMimeType(ContentService.MimeType.JSON)
 }
 
 // ── Utility: isi snapshot yang terlewat (jalankan manual dari editor) ─────────
@@ -1184,6 +1344,9 @@ function fillSnapshotDerived() {
 
     if (newRows.length > 0) {
       batchInsertRows(snapshotSheet, newRows)
+      // Bulan berikutnya di FILL_MONTHS harus melihat snapshot yang baru ditulis.
+      resetMemo()
+      bumpStokGen()
       Logger.log("[FILL] Saved " + newRows.length + " rows untuk " + year + "-" + month)
     } else {
       Logger.log("[FILL] Snapshot " + year + "-" + month + " sudah ada semua, dilewati.")
