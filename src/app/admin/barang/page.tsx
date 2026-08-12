@@ -403,12 +403,6 @@ export default function BarangPage() {
                 </div>
               )}
             </div>
-
-            {editId && (
-              <p className="text-xs text-gray-500">
-                Kedua nilai disimpan apa adanya. Mengubah saldo awal tidak lagi ikut menggeser sisa saldo.
-              </p>
-            )}
           </form>
         </Modal>
       )}
