@@ -32,7 +32,7 @@ export default function StokPage() {
     try {
       const [stok, grouped] = await Promise.all([
         getStokData(targetMonth, targetYear, { signal, refresh }),
-        getBarangGrouped({ signal }),
+        getBarangGrouped({ signal, refresh }),
       ])
 
       if (signal.aborted || requestSeq !== requestSeqRef.current) return

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, Plus } from 'lucide-react'
-import { getKeluarGrouped, getBarangGrouped, addKeluarBatch, updateKeluar, deleteKeluar, pingAPI, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getKeluarGrouped, getBarangGrouped, addKeluarBatch, newBatchId, updateKeluar, deleteKeluar, pingAPI, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
 import Toast from '@/components/Toast'
@@ -176,16 +176,19 @@ export default function KeluarPage() {
   const [toast, setToast] = useState('')
   const abortRef = useRef<AbortController | null>(null)
   const requestSeqRef = useRef(0)
+  // Dipertahankan selama isi form belum berubah, supaya menekan simpan ulang
+  // setelah gagal tidak menulis dua kali di server.
+  const batchIdRef = useRef<string | null>(null)
 
-  const load = useCallback(async (targetMonth: number, targetYear: number, signal: AbortSignal, requestSeq: number) => {
+  const load = useCallback(async (targetMonth: number, targetYear: number, signal: AbortSignal, requestSeq: number, refresh = false) => {
     setLoading(true)
     setError('')
     try {
       // Satu request untuk ketiga type — bukan tiga. Overhead Apps Script per
       // request ~2 detik, jadi ini memangkas dua kali overhead itu.
       const [keluar, grouped] = await Promise.all([
-        getKeluarGrouped(targetMonth, targetYear, { signal }),
-        getBarangGrouped({ signal }),
+        getKeluarGrouped(targetMonth, targetYear, { signal, refresh }),
+        getBarangGrouped({ signal, refresh }),
       ])
 
       if (signal.aborted || requestSeq !== requestSeqRef.current) return
@@ -203,7 +206,7 @@ export default function KeluarPage() {
     }
   }, [])
 
-  const loadForPeriod = useCallback((targetMonth: number, targetYear: number) => {
+  const loadForPeriod = useCallback((targetMonth: number, targetYear: number, refresh = false) => {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -211,7 +214,7 @@ export default function KeluarPage() {
     const requestSeq = requestSeqRef.current + 1
     requestSeqRef.current = requestSeq
 
-    void load(targetMonth, targetYear, controller.signal, requestSeq)
+    void load(targetMonth, targetYear, controller.signal, requestSeq, refresh)
   }, [load])
 
   useEffect(() => {
@@ -230,6 +233,7 @@ export default function KeluarPage() {
 
   function openAdd() {
     setEditId(null)
+    batchIdRef.current = null
     setItems([makeItem()])
     setItemErrors([{}])
     setModalOpen(true)
@@ -289,12 +293,14 @@ export default function KeluarPage() {
       if (editId) {
         await updateKeluar(activeType, { ...items[0], id: editId })
       } else {
-        await addKeluarBatch(activeType, items)
+        if (!batchIdRef.current) batchIdRef.current = newBatchId()
+        await addKeluarBatch(activeType, items, batchIdRef.current)
       }
+      batchIdRef.current = null
       setModalOpen(false)
       loadForPeriod(month, year)
-    } catch {
-      alert('Gagal menyimpan data.')
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Gagal menyimpan data.')
     } finally {
       setSaving(false)
     }
@@ -307,8 +313,8 @@ export default function KeluarPage() {
       await deleteKeluar(activeType, deleteId)
       setDeleteId(null)
       loadForPeriod(month, year)
-    } catch {
-      alert('Gagal menghapus data.')
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Gagal menghapus data.')
     } finally {
       setSaving(false)
     }
@@ -337,7 +343,7 @@ export default function KeluarPage() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-900">Persediaan Keluar</h1>
-        <button onClick={() => loadForPeriod(month, year)} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors">
+        <button onClick={() => loadForPeriod(month, year, true)} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors">
           <RefreshCw size={14} /> Refresh
         </button>
       </div>

@@ -115,6 +115,16 @@ const RETRY_DELAYS_MS = [400, 1200]
 const TOTAL_BUDGET_MS = 45000
 const PER_ATTEMPT_TIMEOUT_MS = 25000
 
+/**
+ * Penulisan diberi waktu jauh lebih longgar daripada pembacaan.
+ *
+ * Input batch bisa ratusan baris dan Apps Script memperbarui saldo master satu
+ * per satu, jadi 25 detik terlalu cepat menyerah. Dan menyerah duluan justru
+ * berbahaya: servernya tetap menyelesaikan penulisan, sementara pengguna melihat
+ * error lalu menekan simpan lagi. Lebih baik menunggu jawaban yang sebenarnya.
+ */
+const WRITE_TIMEOUT_MS = 120000
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -128,7 +138,10 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
 async function apiFetch(input: RequestInfo, init?: RequestInit) {
   // POST tidak boleh diulang otomatis — berisiko dobel tulis ke sheet.
   const canRetry = !init?.method || init.method.toUpperCase() === 'GET'
+  const isWrite = !canRetry
   const attempts = canRetry ? RETRY_DELAYS_MS.length + 1 : 1
+  const budget = isWrite ? WRITE_TIMEOUT_MS : TOTAL_BUDGET_MS
+  const perAttempt = isWrite ? WRITE_TIMEOUT_MS : PER_ATTEMPT_TIMEOUT_MS
   const callerSignal = init?.signal ?? undefined
   const startedAt = Date.now()
 
@@ -137,14 +150,14 @@ async function apiFetch(input: RequestInfo, init?: RequestInit) {
     if (i > 0) await sleep(RETRY_DELAYS_MS[i - 1])
 
     // Timeout percobaan ini tidak boleh melampaui sisa anggaran, supaya total
-    // waktu tunggu benar-benar terkunci di TOTAL_BUDGET_MS.
-    const remaining = TOTAL_BUDGET_MS - (Date.now() - startedAt)
+    // waktu tunggu benar-benar terkunci.
+    const remaining = budget - (Date.now() - startedAt)
     if (remaining <= 0) break
 
     try {
       const res = await fetch(input, {
         ...init,
-        signal: withTimeout(callerSignal, Math.min(PER_ATTEMPT_TIMEOUT_MS, remaining)),
+        signal: withTimeout(callerSignal, Math.min(perAttempt, remaining)),
       })
       if (res.ok) return res
       lastError = new Error(`HTTP ${res.status}`)
@@ -160,11 +173,34 @@ async function apiFetch(input: RequestInfo, init?: RequestInit) {
 
 interface FetchOptions {
   signal?: AbortSignal
+  /**
+   * Lewati SEMUA lapisan cache dan baca ulang dari spreadsheet.
+   *
+   * Ada tiga lapisan di jalur ini — Data Cache Vercel, CacheService Apps Script
+   * untuk master barang, dan cache hasil laporan stok — sehingga tombol Refresh
+   * wajib menembus ketiganya. Kalau tidak, yang terjadi hanya membaca ulang
+   * cache yang sama dan tampilan tidak berubah sama sekali.
+   */
+  refresh?: boolean
 }
 
-interface StokFetchOptions extends FetchOptions {
-  /** Paksa Apps Script menghitung ulang, melewati cache 6 jam miliknya. */
-  refresh?: boolean
+/**
+ * Buat penanda batch baru untuk satu kali niat menyimpan.
+ *
+ * Aturannya: satu id per isi form. Pertahankan id yang sama selama pengguna
+ * mencoba ulang isi yang sama, dan baru ganti setelah tersimpan atau saat form
+ * diisi dari awal.
+ */
+export function newBatchId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+/** Tambahkan penanda refresh ke URL baca. */
+function withRefresh(url: string, options?: FetchOptions) {
+  return options?.refresh ? `${url}&refresh=1` : url
 }
 
 function parseBarangRow(r: unknown[]): Barang {
@@ -181,14 +217,14 @@ function parseBarangRow(r: unknown[]): Barang {
 
 export async function pingAPI(options?: FetchOptions): Promise<void> {
   try {
-    await fetch(`${READ_URL}?action=ping`, { cache: 'no-store', signal: options?.signal })
+    await fetch(withRefresh(`${READ_URL}?action=ping`, options), { cache: 'no-store', signal: options?.signal })
   } catch {
     // ignore — fire and forget
   }
 }
 
 export async function getBarangGrouped(options?: FetchOptions): Promise<BarangGrouped> {
-  const res = await apiFetch(`${READ_URL}?action=barang`, { cache: 'no-store', signal: options?.signal })
+  const res = await apiFetch(withRefresh(`${READ_URL}?action=barang`, options), { cache: 'no-store', signal: options?.signal })
   const data: Record<KeluarType, unknown[][]> = await res.json()
   return {
     atk: (data.atk ?? []).map(parseBarangRow),
@@ -197,8 +233,8 @@ export async function getBarangGrouped(options?: FetchOptions): Promise<BarangGr
   }
 }
 
-export async function getBarang(type: KeluarType): Promise<Barang[]> {
-  const res = await apiFetch(`${READ_URL}?action=barang&type=${type}`, { cache: 'no-store' })
+export async function getBarang(type: KeluarType, options?: FetchOptions): Promise<Barang[]> {
+  const res = await apiFetch(withRefresh(`${READ_URL}?action=barang&type=${type}`, options), { cache: 'no-store', signal: options?.signal })
   const data: unknown[][] = await res.json()
   return data.map(parseBarangRow)
 }
@@ -239,7 +275,7 @@ async function getTransaksiGrouped(
   year?: number,
   options?: FetchOptions
 ): Promise<Record<KeluarType, Keluar[]>> {
-  const res = await apiFetch(transaksiUrl(action, undefined, month, year), {
+  const res = await apiFetch(withRefresh(transaksiUrl(action, undefined, month, year), options), {
     cache: 'no-store',
     signal: options?.signal,
   })
@@ -256,12 +292,20 @@ export function getKeluarGrouped(month?: number, year?: number, options?: FetchO
 }
 
 export async function getKeluar(type: KeluarType, month?: number, year?: number, options?: FetchOptions): Promise<Keluar[]> {
-  const res = await apiFetch(transaksiUrl('keluar', type, month, year), { cache: 'no-store', signal: options?.signal })
+  const res = await apiFetch(withRefresh(transaksiUrl('keluar', type, month, year), options), { cache: 'no-store', signal: options?.signal })
   const data: unknown[][] = await res.json()
   return data.map(parseTransaksiRow)
 }
 
-async function postJSON(body: object) {
+/**
+ * Apps Script SELALU membalas HTTP 200, termasuk saat penulisan ditolak — status
+ * sebenarnya hanya ada di body sebagai {"status":"error", "message": ...}.
+ *
+ * Karena itu body wajib diperiksa. Tanpa ini, penolakan seperti
+ * "server busy, please retry" (lock timeout saat beberapa orang menyimpan
+ * bersamaan) lolos sebagai sukses, modal tertutup, dan datanya hilang diam-diam.
+ */
+async function postJSON(body: object): Promise<Record<string, unknown>> {
   const res = await apiFetch(BASE_URL, {
     method: 'POST',
     // Content-Type: text/plain avoids CORS preflight for Google Apps Script
@@ -269,28 +313,48 @@ async function postJSON(body: object) {
     body: JSON.stringify(body),
   })
 
-  // Tulisannya berhasil; sekarang buang cache proxy supaya angka baru langsung
-  // terlihat. Kegagalan di sini tidak boleh menggagalkan penyimpanan yang sudah
-  // terjadi — paling buruk data tertahan sampai jendela revalidasi berikutnya.
+  const raw = await res.text()
+  let payload: Record<string, unknown>
+  try {
+    payload = JSON.parse(raw)
+  } catch {
+    throw new Error('Respons server tidak dikenali. Data mungkin belum tersimpan.')
+  }
+
+  if (payload?.status === 'error') {
+    throw new Error(String(payload.message ?? 'Penyimpanan ditolak server.'))
+  }
+
+  // Baru di sini penulisan benar-benar berhasil. Buang cache proxy supaya angka
+  // baru langsung terlihat — juga oleh pengguna lain, karena revalidasi bersifat
+  // global. Kegagalan langkah ini tidak boleh menggagalkan penyimpanan yang sudah
+  // terjadi: paling buruk data tertahan sampai jendela revalidasi berikutnya.
   try {
     await fetch(`${READ_URL}/revalidate`, { method: 'POST' })
   } catch {
     // abaikan
   }
 
-  return res
+  return payload
 }
 
-export async function addKeluar(type: KeluarType, payload: Omit<Keluar, 'id' | 'sisa_saldo'>): Promise<void> {
-  await postJSON({ ...payload, type, action: 'add' })
+/**
+ * batchId membuat penyimpanan aman diulang.
+ *
+ * Kirim ULANG id yang sama saat mencoba lagi setelah gagal — server mengenalinya
+ * dan tidak menulis dua kali. Gunakan id BARU untuk input yang memang baru.
+ * Lihat newBatchId().
+ */
+export async function addKeluar(type: KeluarType, payload: Omit<Keluar, 'id' | 'sisa_saldo'>, batchId?: string): Promise<void> {
+  await postJSON({ ...payload, type, action: 'add', batchId })
 }
 
-export async function addKeluarBatch(type: KeluarType, items: Omit<Keluar, 'id' | 'sisa_saldo'>[]): Promise<void> {
+export async function addKeluarBatch(type: KeluarType, items: Omit<Keluar, 'id' | 'sisa_saldo'>[], batchId?: string): Promise<void> {
   if (items.length === 1) {
-    await addKeluar(type, items[0])
+    await addKeluar(type, items[0], batchId)
     return
   }
-  await postJSON({ items, type, action: 'addBatch' })
+  await postJSON({ items, type, action: 'addBatch', batchId })
 }
 
 export async function updateKeluar(type: KeluarType, payload: Omit<Keluar, 'sisa_saldo'>): Promise<void> {
@@ -301,9 +365,8 @@ export async function deleteKeluar(type: KeluarType, id: string): Promise<void> 
   await postJSON({ id, type, action: 'delete' })
 }
 
-export async function getStokData(month: number, year: number, options?: StokFetchOptions): Promise<StokItem[]> {
-  // refresh=1 memaksa Apps Script menghitung ulang dari sheet, melewati cache-nya.
-  const url = `${READ_URL}?action=stok&month=${month}&year=${year}` + (options?.refresh ? '&refresh=1' : '')
+export async function getStokData(month: number, year: number, options?: FetchOptions): Promise<StokItem[]> {
+  const url = withRefresh(`${READ_URL}?action=stok&month=${month}&year=${year}`, options)
   const res = await apiFetch(url, { cache: 'no-store', signal: options?.signal })
   const data: unknown = await res.json()
   if (!Array.isArray(data)) return []
@@ -330,21 +393,21 @@ export function getMasukGrouped(month?: number, year?: number, options?: FetchOp
 }
 
 export async function getMasuk(type: KeluarType, month?: number, year?: number, options?: FetchOptions): Promise<Masuk[]> {
-  const res = await apiFetch(transaksiUrl('masuk', type, month, year), { cache: 'no-store', signal: options?.signal })
+  const res = await apiFetch(withRefresh(transaksiUrl('masuk', type, month, year), options), { cache: 'no-store', signal: options?.signal })
   const data: unknown[][] = await res.json()
   return data.map(parseTransaksiRow)
 }
 
-export async function addMasuk(type: KeluarType, payload: Omit<Masuk, 'id' | 'sisa_saldo'>): Promise<void> {
-  await postJSON({ ...payload, type, action: 'addMasuk' })
+export async function addMasuk(type: KeluarType, payload: Omit<Masuk, 'id' | 'sisa_saldo'>, batchId?: string): Promise<void> {
+  await postJSON({ ...payload, type, action: 'addMasuk', batchId })
 }
 
-export async function addMasukBatch(type: KeluarType, items: Omit<Masuk, 'id' | 'sisa_saldo'>[]): Promise<void> {
+export async function addMasukBatch(type: KeluarType, items: Omit<Masuk, 'id' | 'sisa_saldo'>[], batchId?: string): Promise<void> {
   if (items.length === 1) {
-    await addMasuk(type, items[0])
+    await addMasuk(type, items[0], batchId)
     return
   }
-  await postJSON({ items, type, action: 'addMasukBatch' })
+  await postJSON({ items, type, action: 'addMasukBatch', batchId })
 }
 
 export async function updateMasuk(type: KeluarType, payload: Omit<Masuk, 'sisa_saldo'>): Promise<void> {

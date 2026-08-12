@@ -152,14 +152,14 @@ export default function KeluarPage() {
   const [editErrors, setEditErrors] = useState<ItemErrors>({})
   const [deleteId, setDeleteId] = useState<string | null>(null)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (refresh = false) => {
     setLoading(true)
     setError('')
     try {
       // Satu request untuk ketiga type — bukan tiga.
       const [keluar, grouped] = await Promise.all([
-        getKeluarGrouped(month, year),
-        getBarangGrouped(),
+        getKeluarGrouped(month, year, { refresh }),
+        getBarangGrouped({ refresh }),
       ])
       setAllKeluar(keluar)
       setBarangGrouped(grouped)
@@ -200,8 +200,8 @@ export default function KeluarPage() {
       await updateKeluar(activeType, { ...editItem, id: editId })
       setModalOpen(false)
       await load()
-    } catch {
-      alert('Gagal menyimpan data.')
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Gagal menyimpan data.')
     } finally {
       setSaving(false)
     }
@@ -214,8 +214,8 @@ export default function KeluarPage() {
       await deleteKeluar(activeType, deleteId)
       setDeleteId(null)
       await load()
-    } catch {
-      alert('Gagal menghapus data.')
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Gagal menghapus data.')
     } finally {
       setSaving(false)
     }
@@ -249,7 +249,7 @@ export default function KeluarPage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold text-gray-800">Persediaan Keluar</h1>
         <div className="flex gap-2">
-          <button onClick={load} className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors">
+          <button onClick={() => void load(true)} className="border border-gray-300 text-gray-700 px-3 py-2 rounded-lg text-sm hover:bg-gray-50 transition-colors">
             🔄 Refresh
           </button>
           <Link href="/keluar/input" className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-orange-600 transition-colors">

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { getBarangGrouped, addKeluarBatch, pingAPI, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getBarangGrouped, addKeluarBatch, newBatchId, pingAPI, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import SearchableSelect from '@/components/SearchableSelect'
 import Toast from '@/components/Toast'
 
@@ -174,6 +174,9 @@ export default function KeluarInputPage() {
   const [submitError, setSubmitError] = useState('')
   const [toast, setToast] = useState('')
   const newItemRef = useRef<HTMLDivElement>(null)
+  // Dipertahankan selama isi form belum berubah, supaya menekan simpan ulang
+  // setelah gagal tidak menulis dua kali di server.
+  const batchIdRef = useRef<string | null>(null)
   const [actionsEl, setActionsEl] = useState<HTMLDivElement | null>(null)
   const [isSticky, setIsSticky] = useState(false)
 
@@ -238,16 +241,19 @@ export default function KeluarInputPage() {
     setSaving(true)
     setSubmitError('')
     try {
-      await addKeluarBatch(selectedType, items)
+      if (!batchIdRef.current) batchIdRef.current = newBatchId()
+      await addKeluarBatch(selectedType, items, batchIdRef.current)
+      batchIdRef.current = null
       setSuccess(true)
-    } catch {
-      setSubmitError('Gagal menyimpan data. Periksa koneksi dan coba lagi.')
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Gagal menyimpan data. Periksa koneksi dan coba lagi.')
     } finally {
       setSaving(false)
     }
   }
 
   function handleReset() {
+    batchIdRef.current = null
     setItems([makeItem()])
     setItemErrors([{}])
     setSuccess(false)

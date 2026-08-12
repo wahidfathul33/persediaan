@@ -14,11 +14,15 @@ const TABS: { value: KeluarType; label: string }[] = [
   { value: 'obat', label: 'Obat' },
 ]
 
-type BarangForm = Omit<Barang, 'id' | 'sisa_saldo'>
-type BarangErrors = Partial<Record<'kode_barang' | 'nama_barang' | 'merk' | 'satuan' | 'saldo_awal', string>>
+// sisa_saldo ikut di form karena update master kini menyimpan apa adanya, tanpa
+// menghitung ulang di server. Saat menambah barang baru field ini disembunyikan:
+// sisa_saldo barang baru selalu sama dengan saldo_awal, jadi meminta keduanya
+// hanya membuka peluang salah isi.
+type BarangForm = Omit<Barang, 'id'>
+type BarangErrors = Partial<Record<'kode_barang' | 'nama_barang' | 'merk' | 'satuan' | 'saldo_awal' | 'sisa_saldo', string>>
 
 function makeForm(): BarangForm {
-  return { kode_barang: '', nama_barang: '', merk: '', satuan: '', saldo_awal: 0 }
+  return { kode_barang: '', nama_barang: '', merk: '', satuan: '', saldo_awal: 0, sisa_saldo: 0 }
 }
 
 export default function BarangPage() {
@@ -36,11 +40,11 @@ export default function BarangPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [toast, setToast] = useState('')
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (refresh = false) => {
     setLoading(true)
     setError('')
     try {
-      setGrouped(await getBarangGrouped())
+      setGrouped(await getBarangGrouped({ refresh }))
     } catch {
       setError('Gagal memuat data barang.')
     } finally {
@@ -66,7 +70,7 @@ export default function BarangPage() {
 
   function openEdit(b: Barang) {
     setEditId(b.id)
-    setForm({ kode_barang: b.kode_barang, nama_barang: b.nama_barang, merk: b.merk, satuan: b.satuan, saldo_awal: b.saldo_awal })
+    setForm({ kode_barang: b.kode_barang, nama_barang: b.nama_barang, merk: b.merk, satuan: b.satuan, saldo_awal: b.saldo_awal, sisa_saldo: b.sisa_saldo })
     setFormErrors({})
     setModalOpen(true)
     pingAPI()
@@ -79,6 +83,7 @@ export default function BarangPage() {
     if (!form.merk.trim()) e.merk = 'Merk wajib diisi'
     if (!form.satuan.trim()) e.satuan = 'Satuan wajib diisi'
     if (form.saldo_awal < 0) e.saldo_awal = 'Saldo awal tidak boleh negatif'
+    if (editId && form.sisa_saldo < 0) e.sisa_saldo = 'Sisa saldo tidak boleh negatif'
     setFormErrors(e)
     return Object.keys(e).length === 0
   }
@@ -89,15 +94,17 @@ export default function BarangPage() {
     setSaving(true)
     try {
       if (editId) {
-        const existing = grouped[activeTab].find(b => b.id === editId)!
-        await updateBarang(activeTab, { ...form, id: editId, sisa_saldo: existing.sisa_saldo })
+        // Dikirim apa adanya — server tidak lagi menghitung ulang sisa_saldo.
+        await updateBarang(activeTab, { ...form, id: editId })
       } else {
-        await addBarang(activeTab, form)
+        // Barang baru: server menyetel sisa_saldo = saldo_awal.
+        const { kode_barang, nama_barang, merk, satuan, saldo_awal } = form
+        await addBarang(activeTab, { kode_barang, nama_barang, merk, satuan, saldo_awal })
       }
       setModalOpen(false)
       await load()
-    } catch {
-      setToast('Gagal menyimpan data.')
+    } catch (err) {
+      setToast(err instanceof Error ? err.message : 'Gagal menyimpan data.')
     } finally {
       setSaving(false)
     }
@@ -110,8 +117,8 @@ export default function BarangPage() {
       await deleteBarang(activeTab, deleteId)
       setDeleteId(null)
       await load()
-    } catch {
-      setToast('Gagal menghapus data.')
+    } catch (err) {
+      setToast(err instanceof Error ? err.message : 'Gagal menghapus data.')
     } finally {
       setSaving(false)
     }
@@ -135,7 +142,7 @@ export default function BarangPage() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Master Barang</h1>
         <button
-          onClick={load}
+          onClick={() => void load(true)}
           className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors"
         >
           <RefreshCw size={14} /> Refresh
@@ -377,7 +384,31 @@ export default function BarangPage() {
                 />
                 {formErrors.saldo_awal && <p className="text-red-500 text-xs mt-1">{formErrors.saldo_awal}</p>}
               </div>
+
+              {/* Hanya saat edit. Untuk barang baru, sisa saldo selalu sama dengan
+                  saldo awal dan diisi server. */}
+              {editId && (
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    Sisa Saldo <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={form.sisa_saldo}
+                    onChange={(e) => setForm((f) => ({ ...f, sisa_saldo: Number(e.target.value) }))}
+                    className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${formErrors.sisa_saldo ? 'border-red-400' : 'border-gray-300'}`}
+                  />
+                  {formErrors.sisa_saldo && <p className="text-red-500 text-xs mt-1">{formErrors.sisa_saldo}</p>}
+                </div>
+              )}
             </div>
+
+            {editId && (
+              <p className="text-xs text-gray-500">
+                Kedua nilai disimpan apa adanya. Mengubah saldo awal tidak lagi ikut menggeser sisa saldo.
+              </p>
+            )}
           </form>
         </Modal>
       )}

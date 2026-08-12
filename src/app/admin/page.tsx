@@ -25,12 +25,12 @@ export default function DashboardPage() {
   // reset hanya perlu saat pengguna menekan Refresh. Pada pemuatan pertama,
   // ketiga state itu sudah bernilai awal yang benar, dan menyetelnya ulang di
   // dalam effect justru memicu render berantai.
-  const load = useCallback(async (reset: boolean) => {
+  const load = useCallback(async (refresh: boolean) => {
     const now = new Date()
     const month = now.getMonth() + 1
     const year = now.getFullYear()
 
-    if (reset) {
+    if (refresh) {
       setLoading(true)
       setError('')
       setIncomplete([])
@@ -43,10 +43,10 @@ export default function DashboardPage() {
     // sub-request yang apes menghanguskan seluruh dashboard termasuk tiga hasil
     // yang sebetulnya sukses. Di sini yang berhasil tetap ditampilkan.
     const [barangRes, keluarRes, masukRes, stokRes] = await Promise.allSettled([
-      getBarangGrouped(),
-      getKeluarGrouped(month, year),
-      getMasukGrouped(month, year),
-      getStokData(month, year),
+      getBarangGrouped({ refresh }),
+      getKeluarGrouped(month, year, { refresh }),
+      getMasukGrouped(month, year, { refresh }),
+      getStokData(month, year, { refresh }),
     ])
 
     const gagal: string[] = []

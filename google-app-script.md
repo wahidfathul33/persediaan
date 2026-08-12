@@ -13,6 +13,9 @@
  *    Keluar ATK / Keluar RT / Keluar Obat
  *    Masuk ATK  / Masuk RT  / Masuk Obat
  *    Snapshot Saldo   ← buat manual, header di baris 1
+ *    Batch Log        ← dibuat OTOMATIS saat penyimpanan pertama, jangan dihapus.
+ *                       Berisi catatan permanen id penyimpanan agar input yang
+ *                       diulang setelah gagal tidak tertulis dua kali.
  *
  *  Kolom Sheet Barang  : A=id  B=kode_barang  C=nama_barang  D=merk  E=satuan  F=saldo_awal  G=sisa_saldo
  *  Kolom Sheet Keluar  : A=id  B=id_barang    C=kode_barang  D=nama  E=merk    F=satuan      G=tanggal  H=qty  I=sisa_saldo  J=keterangan
@@ -481,6 +484,116 @@ function setStokCache(year, month, json) {
   } catch (e) { /* cache is optional, fail silently */ }
 }
 
+// ── Idempotensi penulisan batch (v3.4) ───────────────────────────────────────
+//
+// Input biasanya ratusan baris sekaligus. Kegagalan yang berbahaya bukan
+// penolakan validasi (itu sudah all-or-nothing, nol baris tertulis), melainkan
+// respons yang HILANG DI JALAN setelah server selesai menulis — entah karena 404
+// transien dari googleusercontent, atau browser menyerah duluan. Pengguna
+// melihat error, menekan simpan lagi, dan ratusan baris masuk dua kali sekaligus
+// memotong saldo dua kali.
+//
+// Karena itu setiap penulisan "add*" membawa batchId. Hasilnya disimpan sebentar,
+// dan kiriman dengan batchId yang sama mengembalikan hasil lama tanpa menulis apa
+// pun. Menekan simpan ulang jadi aman.
+//
+// TTL 6 jam: cukup panjang untuk percobaan ulang oleh manusia, dan tidak perlu
+// permanen karena input berikutnya selalu memakai batchId baru.
+
+// Penanda disimpan di DUA tempat, dengan peran berbeda:
+//
+//   CacheService  — jalur cepat, TTL 6 jam. Bisa dikeluarkan Google sewaktu-waktu.
+//   Sheet "Batch Log" — catatan permanen. Inilah yang membuat perlindungan tidak
+//                       bergantung pada cache yang bisa hilang.
+//
+// Cache diperiksa lebih dulu; sheet hanya dibaca kalau cache meleset. Dan yang
+// dibaca cuma kolom A (daftar id), bukan seluruh lebar baris — jadi pemeriksaan
+// tetap murah walau catatannya sudah ribuan baris.
+
+const BATCH_ID_TTL      = 21600
+const BATCH_SHEET_NAME  = "Batch Log"
+const BATCH_LOG_MAX_ROWS = 5000   // di atas ini, baris tertua dipangkas
+
+function _batchKey(id) { return "batch_v1_" + id }
+
+/**
+ * Sheet "Batch Log", dibuat otomatis kalau belum ada.
+ * Hanya dipanggil di jalur tulis, jadi tidak membebani pembacaan.
+ */
+function ensureBatchSheet() {
+  if (_memo.batchSheet !== undefined) return _memo.batchSheet
+
+  let sheet = SS.getSheetByName(BATCH_SHEET_NAME)
+  if (!sheet) {
+    try {
+      sheet = SS.insertSheet(BATCH_SHEET_NAME)
+      sheet.appendRow(["batch_id", "waktu", "action", "type", "hasil"])
+      Logger.log("[BATCH] Sheet '" + BATCH_SHEET_NAME + "' dibuat otomatis.")
+    } catch (e) {
+      Logger.log("[WARN] Gagal membuat sheet '" + BATCH_SHEET_NAME + "': " + e.message)
+      sheet = null
+    }
+  }
+
+  _memo.batchSheet = sheet
+  return sheet
+}
+
+/** Cari batchId di catatan permanen. Hanya kolom A yang dibaca. */
+function findBatchInSheet(id) {
+  const sheet = SS.getSheetByName(BATCH_SHEET_NAME)
+  if (!sheet) return null
+
+  const lastRow = sheet.getLastRow()
+  if (lastRow < 2) return null
+
+  const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues()
+  // Dari belakang: percobaan ulang hampir selalu mengejar batch yang baru.
+  for (let i = ids.length - 1; i >= 0; i--) {
+    if (String(ids[i][0]) === id) {
+      return String(sheet.getRange(i + 2, 5).getValue() || "")
+    }
+  }
+  return null
+}
+
+function pruneBatchLog(sheet) {
+  const total = sheet.getLastRow() - 1
+  if (total <= BATCH_LOG_MAX_ROWS) return
+  try {
+    sheet.deleteRows(2, total - BATCH_LOG_MAX_ROWS)
+  } catch (e) { /* pemangkasan bersifat kebersihan, bukan keharusan */ }
+}
+
+/** @returns {string|null} JSON hasil sebelumnya untuk batchId ini. */
+function getBatchResult(id) {
+  if (!id) return null
+
+  try {
+    const cepat = CacheService.getScriptCache().get(_batchKey(id))
+    if (cepat) return cepat
+  } catch (e) { /* lanjut ke catatan permanen */ }
+
+  return findBatchInSheet(id)
+}
+
+function rememberBatchResult(id, action, type, json) {
+  if (!id) return
+
+  try {
+    CacheService.getScriptCache().put(_batchKey(id), json, BATCH_ID_TTL)
+  } catch (e) { /* cache is optional, fail silently */ }
+
+  const sheet = ensureBatchSheet()
+  if (!sheet) return
+  try {
+    sheet.appendRow([id, new Date(), action, type, json])
+    pruneBatchLog(sheet)
+  } catch (e) {
+    Logger.log("[WARN] Gagal mencatat batch " + id + ": " + e.message)
+  }
+}
+
 // ── Snapshot Saldo ────────────────────────────────────────────────────────────
 
 /**
@@ -655,15 +768,19 @@ function doGet(e) {
     const month  = e.parameter.month
     const year   = e.parameter.year
 
+    // refresh=1 menembus semua cache dan membaca ulang dari spreadsheet.
+    // Dipakai oleh tombol Refresh di seluruh halaman.
+    const forceRefresh = e.parameter.refresh === "1"
+
     if (action === "ping")   return jsonResponse({ ok: true, ts: new Date().toISOString() })
-    if (action === "barang") return handleGetBarang(type)
+    if (action === "barang") return handleGetBarang(type, forceRefresh)
     // Tanpa parameter type, keduanya mengembalikan ATK+RT+Obat sekaligus supaya
     // halaman cukup satu request, bukan tiga.
     if (action === "keluar") return handleGetTransaksi("keluar", type, month, year)
     if (action === "masuk")  return handleGetTransaksi("masuk",  type, month, year)
     // refresh=1 melewati cache dan menghitung ulang dari sheet — dipakai tombol
     // Refresh di halaman laporan stok.
-    if (action === "stok")   return handleGetStok(month, year, e.parameter.refresh === "1")
+    if (action === "stok")   return handleGetStok(month, year, forceRefresh)
 
     return errorResponse("unknown action: " + action)
 
@@ -673,7 +790,14 @@ function doGet(e) {
   }
 }
 
-function handleGetBarang(type) {
+function handleGetBarang(type, forceRefresh) {
+  // Master barang punya CacheService sendiri (TTL 300 detik). Tanpa membuangnya,
+  // tombol Refresh hanya menyajikan ulang isi cache yang sama dan kolom
+  // saldo_awal/sisa_saldo yang baru diedit di spreadsheet tidak akan terlihat.
+  if (forceRefresh) {
+    VALID_TYPES.forEach(function(t) { clearBarangCache(t) })
+  }
+
   if (!type || !SHEETS.barang[type]) {
     const grouped = {}
     VALID_TYPES.forEach(function(t) { grouped[t] = getBarangRows(t) })
@@ -763,14 +887,43 @@ function doPost(e) {
 
     const lock = LockService.getScriptLock()
     try {
-      lock.waitLock(15000)
+      // Lock ini global untuk seluruh pengguna, jadi penulisan selalu berurutan.
+      // Satu penulisan makan 2–9 detik, sehingga 15 detik hanya menampung dua
+      // antrean — terlalu sempit kalau beberapa orang menyimpan bersamaan.
+      // 30 detik masih jauh di bawah batas eksekusi Apps Script (6 menit).
+      lock.waitLock(30000)
     } catch (err) {
-      return errorResponse("server busy, please retry", 503)
+      // Pesan ini kini sampai ke layar pengguna, jadi ditulis dalam bahasa mereka.
+      return errorResponse("Server sedang sibuk. Mohon simpan ulang sebentar lagi.", 503)
     }
 
+    // Idempotensi hanya untuk "add*": itulah satu-satunya jalur yang menambah
+    // baris baru, sehingga kiriman ganda benar-benar menggandakan data.
+    // update bersifat idempoten sendiri (menyetel nilai absolut, pengulangan jadi
+    // no-op) dan delete gagal aman di percobaan kedua karena id-nya sudah lenyap.
+    const isAddAction = action.indexOf("add") === 0 && !isBarangAction
+    const batchId = isAddAction && data.batchId ? String(data.batchId) : ""
+
     try {
+      if (batchId) {
+        const sebelumnya = getBatchResult(batchId)
+        if (sebelumnya) {
+          Logger.log("[BATCH] " + batchId + " sudah pernah diproses — tidak menulis ulang")
+          return ContentService.createTextOutput(sebelumnya).setMimeType(ContentService.MimeType.JSON)
+        }
+      }
+
       markScriptWrite()
       const res = dispatch(action, type, sheet, data)
+
+      if (batchId) {
+        const content = res.getContent()
+        let ok = false
+        try { ok = JSON.parse(content).status !== "error" } catch (e) { ok = false }
+        // Hanya hasil sukses yang diingat. Penolakan validasi tidak menulis apa
+        // pun, jadi percobaan ulang setelah diperbaiki harus benar-benar jalan.
+        if (ok) rememberBatchResult(batchId, action, type, content)
+      }
 
       // Cakupan invalidasi sengaja dibedakan.
       //
@@ -784,8 +937,7 @@ function doPost(e) {
       //
       // Tetap dijalankan tanpa memeriksa sukses/gagal: invalidasi berlebih cuma
       // memicu hitung ulang, sedangkan yang terlewat menyajikan data basi.
-      const isAdd = action.indexOf("add") === 0 && !isBarangAction
-      const from  = isAdd ? earliestMonthInPayload(data) : null
+      const from = isAddAction ? earliestMonthInPayload(data) : null
       if (from) bumpStokGenFrom(from.year, from.month)
       else bumpStokGenAll()
 
@@ -1140,10 +1292,19 @@ function handleAddBarang(type, data) {
   return jsonResponse({ status: "success", id: id })
 }
 
+/**
+ * Update master barang — MURNI menyimpan apa yang dikirim, tanpa perhitungan.
+ *
+ * Sebelumnya sisa_saldo dihitung sendiri: delta = saldo_awal baru - lama, lalu
+ * sisa_saldo digeser sebesar delta itu. Perilaku itu dihapus karena membuat
+ * koreksi master jadi tidak terduga — mengubah saldo_awal ikut menggeser angka
+ * yang tidak diminta. Sekarang kedua kolom diisi langsung dari form, sehingga
+ * admin melihat persis apa yang akan tersimpan.
+ */
 function handleUpdateBarang(type, data) {
   const t = _t("updateBarang")
 
-  const err = validateFields(data, ["id", "kode_barang", "nama_barang", "merk", "satuan", "saldo_awal"])
+  const err = validateFields(data, ["id", "kode_barang", "nama_barang", "merk", "satuan", "saldo_awal", "sisa_saldo"])
   if (err) return errorResponse(err)
 
   const bSheet    = getBarangSheet(type)
@@ -1152,19 +1313,14 @@ function handleUpdateBarang(type, data) {
   const entry     = barangMap[String(data.id)]
   if (!entry) return errorResponse("id barang tidak ditemukan: " + data.id)
 
-  const oldSaldoAwal = entry.saldo_awal
-  const newSaldoAwal = Number(data.saldo_awal) || 0
-  const delta        = newSaldoAwal - oldSaldoAwal
-  const newSisaSaldo = entry.sisa_saldo + delta
-
   bSheet.getRange(entry.rowIndex, 1, 1, 7).setValues([[
     data.id,
     data.kode_barang,
     data.nama_barang,
     data.merk,
     data.satuan,
-    newSaldoAwal,
-    newSisaSaldo,
+    Number(data.saldo_awal) || 0,
+    Number(data.sisa_saldo) || 0,
   ]])
   clearBarangCache(type)
 
