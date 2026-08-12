@@ -523,8 +523,10 @@ function doGet(e) {
 
     if (action === "ping")   return jsonResponse({ ok: true, ts: new Date().toISOString() })
     if (action === "barang") return handleGetBarang(type)
-    if (action === "keluar") return handleGetKeluar(type, month, year)
-    if (action === "masuk")  return handleGetMasuk(type, month, year)
+    // Tanpa parameter type, keduanya mengembalikan ATK+RT+Obat sekaligus supaya
+    // halaman cukup satu request, bukan tiga.
+    if (action === "keluar") return handleGetTransaksi("keluar", type, month, year)
+    if (action === "masuk")  return handleGetTransaksi("masuk",  type, month, year)
     // refresh=1 melewati cache dan menghitung ulang dari sheet — dipakai tombol
     // Refresh di halaman laporan stok.
     if (action === "stok")   return handleGetStok(month, year, e.parameter.refresh === "1")
@@ -547,44 +549,44 @@ function handleGetBarang(type) {
   return jsonResponse(getBarangRows(type))
 }
 
-function handleGetKeluar(type, month, year) {
-  if (!isValidType(type)) return errorResponse("invalid type: " + type)
-  const sheet = getKeluarSheet(type)
-  if (!sheet) return errorResponse("sheet not found for type: " + type)
-
-  let rows = readRows(sheet)
-
-  if (month && year) {
-    const m = Number(month)
-    const y = Number(year)
-    if (isNaN(m) || isNaN(y) || m < 1 || m > 12) return errorResponse("invalid month/year")
-    rows = rows.filter(function(r) {
-      const d = new Date(r[6])
-      return d.getMonth() + 1 === m && d.getFullYear() === y
-    })
-  }
-
-  return jsonResponse(rows)
+function filterByPeriod(rows, m, y) {
+  if (!m || !y) return rows
+  return rows.filter(function(r) {
+    const d = new Date(r[6])
+    return d.getMonth() + 1 === m && d.getFullYear() === y
+  })
 }
 
-function handleGetMasuk(type, month, year) {
-  if (!isValidType(type)) return errorResponse("invalid type: " + type)
-  const sheet = getMasukSheet(type)
-  if (!sheet) return errorResponse("sheet not found for type: " + type)
+/**
+ * Handler bersama untuk action=masuk dan action=keluar (dulu dua fungsi kembar).
+ *
+ * Dengan parameter type  → array baris untuk type itu saja (bentuk lama, tetap
+ *                          dipakai halaman lain, tidak berubah).
+ * Tanpa parameter type   → { atk: [...], rt: [...], obat: [...] } sekaligus,
+ *                          mengikuti pola action=barang. Ini memangkas halaman
+ *                          Masuk/Keluar dari 4 request menjadi 2.
+ *
+ * @param {string} kind "masuk" | "keluar"
+ */
+function handleGetTransaksi(kind, type, month, year) {
+  const rowsOf = kind === "masuk" ? masukRowsOf : keluarRowsOf
 
-  let rows = readRows(sheet)
-
+  let m = null
+  let y = null
   if (month && year) {
-    const m = Number(month)
-    const y = Number(year)
+    m = Number(month)
+    y = Number(year)
     if (isNaN(m) || isNaN(y) || m < 1 || m > 12) return errorResponse("invalid month/year")
-    rows = rows.filter(function(r) {
-      const d = new Date(r[6])
-      return d.getMonth() + 1 === m && d.getFullYear() === y
-    })
   }
 
-  return jsonResponse(rows)
+  if (!type) {
+    const grouped = {}
+    VALID_TYPES.forEach(function(t) { grouped[t] = filterByPeriod(rowsOf(t), m, y) })
+    return jsonResponse(grouped)
+  }
+
+  if (!isValidType(type)) return errorResponse("invalid type: " + type)
+  return jsonResponse(filterByPeriod(rowsOf(type), m, y))
 }
 
 // ── doPost ────────────────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, Plus } from 'lucide-react'
-import { getKeluar, getBarangGrouped, addKeluarBatch, updateKeluar, deleteKeluar, pingAPI, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getKeluarGrouped, getBarangGrouped, addKeluarBatch, updateKeluar, deleteKeluar, pingAPI, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
 import Toast from '@/components/Toast'
@@ -181,16 +181,16 @@ export default function KeluarPage() {
     setLoading(true)
     setError('')
     try {
-      const [atkData, rtData, obatData, grouped] = await Promise.all([
-        getKeluar('atk', targetMonth, targetYear, { signal }),
-        getKeluar('rt', targetMonth, targetYear, { signal }),
-        getKeluar('obat', targetMonth, targetYear, { signal }),
+      // Satu request untuk ketiga type — bukan tiga. Overhead Apps Script per
+      // request ~2 detik, jadi ini memangkas dua kali overhead itu.
+      const [keluar, grouped] = await Promise.all([
+        getKeluarGrouped(targetMonth, targetYear, { signal }),
         getBarangGrouped({ signal }),
       ])
 
       if (signal.aborted || requestSeq !== requestSeqRef.current) return
 
-      setAllKeluar({ atk: atkData, rt: rtData, obat: obatData })
+      setAllKeluar(keluar)
       setBarangGrouped(grouped)
     } catch (err) {
       if (signal.aborted || requestSeq !== requestSeqRef.current) return

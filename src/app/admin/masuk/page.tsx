@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { RefreshCw, Plus } from 'lucide-react'
-import { getMasuk, getBarangGrouped, addMasukBatch, updateMasuk, deleteMasuk, pingAPI, type Masuk, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getMasukGrouped, getBarangGrouped, addMasukBatch, updateMasuk, deleteMasuk, pingAPI, type Masuk, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
 import Toast from '@/components/Toast'
@@ -181,16 +181,16 @@ export default function MasukPage() {
     setLoading(true)
     setError('')
     try {
-      const [atkData, rtData, obatData, grouped] = await Promise.all([
-        getMasuk('atk', targetMonth, targetYear, { signal }),
-        getMasuk('rt', targetMonth, targetYear, { signal }),
-        getMasuk('obat', targetMonth, targetYear, { signal }),
+      // Satu request untuk ketiga type — bukan tiga. Overhead Apps Script per
+      // request ~2 detik, jadi ini memangkas dua kali overhead itu.
+      const [masuk, grouped] = await Promise.all([
+        getMasukGrouped(targetMonth, targetYear, { signal }),
         getBarangGrouped({ signal }),
       ])
 
       if (signal.aborted || requestSeq !== requestSeqRef.current) return
 
-      setAllMasuk({ atk: atkData, rt: rtData, obat: obatData })
+      setAllMasuk(masuk)
       setBarangGrouped(grouped)
     } catch (err) {
       if (signal.aborted || requestSeq !== requestSeqRef.current) return

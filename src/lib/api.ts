@@ -195,12 +195,9 @@ export async function getBarang(type: KeluarType): Promise<Barang[]> {
   return data.map(parseBarangRow)
 }
 
-export async function getKeluar(type: KeluarType, month?: number, year?: number, options?: FetchOptions): Promise<Keluar[]> {
-  let url = `${BASE_URL}?action=keluar&type=${type}`
-  if (month && year) url += `&month=${month}&year=${year}`
-  const res = await apiFetch(url, { cache: 'no-store', signal: options?.signal })
-  const data: unknown[][] = await res.json()
-  return data.map((r) => ({
+// Baris sheet Masuk dan Keluar punya kolom yang identik, jadi satu parser cukup.
+function parseTransaksiRow(r: unknown[]): Keluar {
+  return {
     id: String(r[0]),
     id_barang: String(r[1]),
     kode_barang: String(r[2]),
@@ -211,7 +208,49 @@ export async function getKeluar(type: KeluarType, month?: number, year?: number,
     qty: Number(r[7]),
     sisa_saldo: Number(r[8]),
     keterangan: String(r[9] ?? ''),
-  }))
+  }
+}
+
+function transaksiUrl(action: 'masuk' | 'keluar', type?: KeluarType, month?: number, year?: number) {
+  let url = `${BASE_URL}?action=${action}`
+  if (type) url += `&type=${type}`
+  if (month && year) url += `&month=${month}&year=${year}`
+  return url
+}
+
+/**
+ * Ambil ATK, RT, dan Obat sekaligus dalam SATU request.
+ *
+ * Apps Script punya overhead tetap ~2 detik per request bahkan saat sehat, jadi
+ * tiga request terpisah memakan waktu tiga kali lipat tanpa alasan — datanya
+ * berasal dari spreadsheet yang sama.
+ */
+async function getTransaksiGrouped(
+  action: 'masuk' | 'keluar',
+  month?: number,
+  year?: number,
+  options?: FetchOptions
+): Promise<Record<KeluarType, Keluar[]>> {
+  const res = await apiFetch(transaksiUrl(action, undefined, month, year), {
+    cache: 'no-store',
+    signal: options?.signal,
+  })
+  const data: Partial<Record<KeluarType, unknown[][]>> = await res.json()
+  return {
+    atk: (data.atk ?? []).map(parseTransaksiRow),
+    rt: (data.rt ?? []).map(parseTransaksiRow),
+    obat: (data.obat ?? []).map(parseTransaksiRow),
+  }
+}
+
+export function getKeluarGrouped(month?: number, year?: number, options?: FetchOptions) {
+  return getTransaksiGrouped('keluar', month, year, options)
+}
+
+export async function getKeluar(type: KeluarType, month?: number, year?: number, options?: FetchOptions): Promise<Keluar[]> {
+  const res = await apiFetch(transaksiUrl('keluar', type, month, year), { cache: 'no-store', signal: options?.signal })
+  const data: unknown[][] = await res.json()
+  return data.map(parseTransaksiRow)
 }
 
 function postJSON(body: object) {
@@ -267,23 +306,14 @@ export interface Masuk {
   keterangan: string
 }
 
+export function getMasukGrouped(month?: number, year?: number, options?: FetchOptions): Promise<Record<KeluarType, Masuk[]>> {
+  return getTransaksiGrouped('masuk', month, year, options)
+}
+
 export async function getMasuk(type: KeluarType, month?: number, year?: number, options?: FetchOptions): Promise<Masuk[]> {
-  let url = `${BASE_URL}?action=masuk&type=${type}`
-  if (month && year) url += `&month=${month}&year=${year}`
-  const res = await apiFetch(url, { cache: 'no-store', signal: options?.signal })
+  const res = await apiFetch(transaksiUrl('masuk', type, month, year), { cache: 'no-store', signal: options?.signal })
   const data: unknown[][] = await res.json()
-  return data.map((r) => ({
-    id: String(r[0]),
-    id_barang: String(r[1]),
-    kode_barang: String(r[2]),
-    nama_barang: String(r[3]),
-    merk: String(r[4]),
-    satuan: String(r[5]),
-    tanggal: parseDate(r[6]),
-    qty: Number(r[7]),
-    sisa_saldo: Number(r[8]),
-    keterangan: String(r[9] ?? ''),
-  }))
+  return data.map(parseTransaksiRow)
 }
 
 export async function addMasuk(type: KeluarType, payload: Omit<Masuk, 'id' | 'sisa_saldo'>): Promise<void> {
