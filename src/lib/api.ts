@@ -1,4 +1,12 @@
+// POST tetap langsung ke Apps Script: jalur itu sudah terbukti jalan, sedangkan
+// meneruskannya lewat server bermasalah karena fetch mengubah POST jadi GET saat
+// mengikuti 302 milik Apps Script.
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? ''
+
+// Semua GET lewat proxy Next.js supaya bisa di-cache di sisi server. Dua hop ke
+// Google (1,5–2,1 detik hanya untuk redirect /exec) hilang sepenuhnya saat cache
+// kena — dan itu biaya terbesar yang terukur.
+const READ_URL = '/api/gas'
 
 export type KeluarType = 'atk' | 'rt' | 'obat'
 
@@ -173,14 +181,14 @@ function parseBarangRow(r: unknown[]): Barang {
 
 export async function pingAPI(options?: FetchOptions): Promise<void> {
   try {
-    await fetch(`${BASE_URL}?action=ping`, { cache: 'no-store', signal: options?.signal })
+    await fetch(`${READ_URL}?action=ping`, { cache: 'no-store', signal: options?.signal })
   } catch {
     // ignore — fire and forget
   }
 }
 
 export async function getBarangGrouped(options?: FetchOptions): Promise<BarangGrouped> {
-  const res = await apiFetch(`${BASE_URL}?action=barang`, { cache: 'no-store', signal: options?.signal })
+  const res = await apiFetch(`${READ_URL}?action=barang`, { cache: 'no-store', signal: options?.signal })
   const data: Record<KeluarType, unknown[][]> = await res.json()
   return {
     atk: (data.atk ?? []).map(parseBarangRow),
@@ -190,7 +198,7 @@ export async function getBarangGrouped(options?: FetchOptions): Promise<BarangGr
 }
 
 export async function getBarang(type: KeluarType): Promise<Barang[]> {
-  const res = await apiFetch(`${BASE_URL}?action=barang&type=${type}`, { cache: 'no-store' })
+  const res = await apiFetch(`${READ_URL}?action=barang&type=${type}`, { cache: 'no-store' })
   const data: unknown[][] = await res.json()
   return data.map(parseBarangRow)
 }
@@ -212,7 +220,7 @@ function parseTransaksiRow(r: unknown[]): Keluar {
 }
 
 function transaksiUrl(action: 'masuk' | 'keluar', type?: KeluarType, month?: number, year?: number) {
-  let url = `${BASE_URL}?action=${action}`
+  let url = `${READ_URL}?action=${action}`
   if (type) url += `&type=${type}`
   if (month && year) url += `&month=${month}&year=${year}`
   return url
@@ -253,13 +261,24 @@ export async function getKeluar(type: KeluarType, month?: number, year?: number,
   return data.map(parseTransaksiRow)
 }
 
-function postJSON(body: object) {
-  return apiFetch(BASE_URL, {
+async function postJSON(body: object) {
+  const res = await apiFetch(BASE_URL, {
     method: 'POST',
     // Content-Type: text/plain avoids CORS preflight for Google Apps Script
     headers: { 'Content-Type': 'text/plain' },
     body: JSON.stringify(body),
   })
+
+  // Tulisannya berhasil; sekarang buang cache proxy supaya angka baru langsung
+  // terlihat. Kegagalan di sini tidak boleh menggagalkan penyimpanan yang sudah
+  // terjadi — paling buruk data tertahan sampai jendela revalidasi berikutnya.
+  try {
+    await fetch(`${READ_URL}/revalidate`, { method: 'POST' })
+  } catch {
+    // abaikan
+  }
+
+  return res
 }
 
 export async function addKeluar(type: KeluarType, payload: Omit<Keluar, 'id' | 'sisa_saldo'>): Promise<void> {
@@ -284,7 +303,7 @@ export async function deleteKeluar(type: KeluarType, id: string): Promise<void> 
 
 export async function getStokData(month: number, year: number, options?: StokFetchOptions): Promise<StokItem[]> {
   // refresh=1 memaksa Apps Script menghitung ulang dari sheet, melewati cache-nya.
-  const url = `${BASE_URL}?action=stok&month=${month}&year=${year}` + (options?.refresh ? '&refresh=1' : '')
+  const url = `${READ_URL}?action=stok&month=${month}&year=${year}` + (options?.refresh ? '&refresh=1' : '')
   const res = await apiFetch(url, { cache: 'no-store', signal: options?.signal })
   const data: unknown = await res.json()
   if (!Array.isArray(data)) return []

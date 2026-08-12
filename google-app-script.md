@@ -1,7 +1,7 @@
 /**
  * ============================================================
  *  INVENTORY MANAGEMENT — Google Apps Script
- *  Production-ready | v3.2
+ *  Production-ready | v3.3
  * ============================================================
  *
  *  SETUP:
@@ -67,6 +67,34 @@
  *    dinaikkan setiap ada POST — jadi data tidak pernah basi setelah input.
  *  - resetMemo() dipanggil setelah saveSnapshot()/fillSnapshotDerived() menulis,
  *    supaya verifikasi setelahnya membaca data yang baru, bukan memo lama.
+ *
+ *  CHANGELOG v3.3 (PERFORMA — tidak mengubah hasil perhitungan):
+ *  Berdasarkan pengukuran terhadap deployment yang berjalan. Yang terukur:
+ *    stok cache HIT  : min 2.0s   (payload 255 KB)
+ *    stok cache MISS : min 10.1s, median 17.7s
+ *    ping 43 byte    : min 2.2s   ← lantai transport, sama dengan HIT
+ *    hop /exec → 302 : 1.5–2.1s   ← bagian terbesar dari lantai itu
+ *  Kesimpulannya cache memang bekerja; sisa waktunya ada di transport, bukan
+ *  di perhitungan. Perubahan di bawah menyasar dua hal: memperbanyak HIT, dan
+ *  membuang pekerjaan yang memang tidak perlu.
+ *
+ *  - Generasi cache jadi PER BULAN. STOK_GEN kini JSON { "_all": n, "202608": n }
+ *    dan generasi efektif sebuah bulan = max(_all, gen bulan itu). Input bulan
+ *    Agustus tidak lagi membatalkan cache laporan Juli yang sudah final.
+ *    Untuk action "add*", bulan terdampak diambil dari tanggal di payload lalu
+ *    dibatalkan sampai bulan berjalan (forward-derive mempengaruhi bulan
+ *    sesudahnya). Untuk update/delete/barang/rollover, tanggal lama tidak ada di
+ *    payload sehingga cakupannya tetap seluruh bulan — sengaja konservatif.
+ *  - onSheetChanged tidak lagi ikut membatalkan cache saat script sendiri yang
+ *    menulis. Installable trigger memang menyala untuk tulisan dari script
+ *    (beda dari simple onEdit), sehingga tiap input lewat aplikasi sebelumnya
+ *    membatalkan cache dua kali. Dijaga dengan penanda LAST_SCRIPT_WRITE.
+ *  - _stokGen() dimemo lewat _genMap(). Sebelumnya PropertiesService terbaca
+ *    2x tiap MISS (sekali di getStokCached, sekali di setStokCache).
+ *  - readRows() membatasi lebar baca ke 10 kolom (Math.min dengan lebar asli),
+ *    supaya format nyasar di kolom jauh tidak membuat tiap request menarik
+ *    puluhan kolom kosong.
+ *  - Prefix cache dinaikkan ke stok_v33_ agar entri v3.2 tidak terbaca.
  * ============================================================
  */
 
@@ -134,11 +162,16 @@ function getMasukSheet(type)  { return SHEETS.masuk[type]  || null }
  * Read all data rows, skipping the header row.
  * Returns empty array if sheet has only header or is empty.
  */
+// Sheet terlebar yang dipakai (Keluar/Masuk) punya 10 kolom. Membatasi lebar
+// baca mencegah format nyasar di kolom jauh membuat setiap request menarik
+// puluhan kolom kosong. Math.min menjaga agar tidak pernah melebihi lebar asli.
+const MAX_COLS = 10
+
 function readRows(sheet) {
   if (!sheet) return []
   const lastRow = sheet.getLastRow()
   if (lastRow < 2) return []
-  const lastCol = sheet.getLastColumn()
+  const lastCol = Math.min(sheet.getLastColumn(), MAX_COLS)
   if (lastCol < 1) return []
   return sheet.getRange(2, 1, lastRow - 1, lastCol).getValues()
 }
@@ -270,23 +303,99 @@ const STOK_CACHE_TTL  = 21600   // 6 jam
 const STOK_CHUNK_SIZE = 50000   // karakter; aman terhadap batas 100 KB per key
 const STOK_MAX_CHUNKS = 20      // di atas ini, lewati caching daripada boros kuota
 
-function _stokGen() {
+// Script Property "STOK_GEN" berisi JSON { "_all": n, "202608": n, ... }.
+// Generasi efektif sebuah bulan = max(_all, generasi bulan itu). Dengan begitu
+// input bulan Agustus tidak lagi membatalkan cache laporan Juli yang sudah final.
+function _genMap() {
+  if (_memo.genMap) return _memo.genMap
+  let m = {}
   try {
-    return PropertiesService.getScriptProperties().getProperty("STOK_GEN") || "0"
-  } catch (e) { return "0" }
+    const raw = PropertiesService.getScriptProperties().getProperty("STOK_GEN")
+    if (raw) m = JSON.parse(raw)
+  } catch (e) { m = {} }
+  if (!m || typeof m !== "object") m = {}
+  _memo.genMap = m
+  return m
 }
 
-/** Naikkan generasi → seluruh cache stok yang lama otomatis tidak terpakai. */
-function bumpStokGen() {
+function _saveGenMap(m) {
   try {
-    const props = PropertiesService.getScriptProperties()
-    const next  = (Number(props.getProperty("STOK_GEN")) || 0) + 1
-    props.setProperty("STOK_GEN", String(next))
+    PropertiesService.getScriptProperties().setProperty("STOK_GEN", JSON.stringify(m))
+    _memo.genMap = m
   } catch (e) { /* cache is optional, fail silently */ }
 }
 
+/** Dimemo lewat _genMap() — dulu PropertiesService terbaca 2x tiap MISS. */
+function _stokGen(year, month) {
+  const m = _genMap()
+  const all = Number(m._all) || 0
+  const own = Number(m[String(year * 100 + month)]) || 0
+  return String(Math.max(all, own))
+}
+
+/** Batalkan cache SEMUA bulan. Untuk perubahan yang bulannya tidak diketahui
+ *  atau berdampak menyeluruh: master barang, hapus/ubah transaksi, rollover. */
+function bumpStokGenAll() {
+  const m = _genMap()
+
+  // _all HARUS melampaui setiap generasi per-bulan yang ada, karena generasi
+  // efektif = max(_all, gen bulan). Sekadar _all+1 tidak membatalkan bulan yang
+  // generasinya sudah lebih tinggi — itu akan menyajikan data basi.
+  // Peta juga direset supaya JSON-nya tidak tumbuh tanpa batas.
+  let top = 0
+  Object.keys(m).forEach(function(k) { top = Math.max(top, Number(m[k]) || 0) })
+  _saveGenMap({ _all: top + 1 })
+}
+
+/** Batalkan cache bulan (year, month) sampai bulan berjalan.
+ *
+ *  Bukan hanya bulan itu sendiri: transaksi bulan M ikut mengubah saldo_awal
+ *  bulan-bulan sesudahnya lewat forward-derive dari snapshot terdekat. Rentang
+ *  ke depan dibatasi bulan berjalan, jadi umumnya cuma 1-2 bulan.
+ */
+function bumpStokGenFrom(year, month) {
+  const m   = _genMap()
+  const now = new Date()
+  const nowNum = now.getFullYear() * 100 + (now.getMonth() + 1)
+
+  const all = Number(m._all) || 0
+
+  let y = year
+  let mo = month
+  for (let guard = 0; guard < 36; guard++) {
+    const key = String(y * 100 + mo)
+    // Harus melampaui _all juga, sebab generasi efektif = max(_all, gen bulan).
+    m[key] = Math.max(Number(m[key]) || 0, all) + 1
+    if (y * 100 + mo >= nowNum) break
+    mo++
+    if (mo > 12) { mo = 1; y++ }
+  }
+  _saveGenMap(m)
+}
+
+/**
+ * Bulan paling awal yang tersentuh oleh payload POST, dari field tanggal.
+ * @returns {{year:number, month:number}|null} null jika tidak ada tanggal valid
+ */
+function earliestMonthInPayload(data) {
+  const dates = []
+  if (data && data.tanggal) dates.push(data.tanggal)
+  if (data && Array.isArray(data.items)) {
+    data.items.forEach(function(it) { if (it && it.tanggal) dates.push(it.tanggal) })
+  }
+
+  let best = null
+  dates.forEach(function(val) {
+    const d = new Date(val)
+    if (isNaN(d.getTime())) return
+    const cur = { year: d.getFullYear(), month: d.getMonth() + 1 }
+    if (!best || cur.year * 100 + cur.month < best.year * 100 + best.month) best = cur
+  })
+  return best
+}
+
 function _stokCacheKey(year, month) {
-  return "stok_v32_" + _stokGen() + "_" + year + "_" + month
+  return "stok_v33_" + _stokGen(year, month) + "_" + year + "_" + month
 }
 
 /**
@@ -300,10 +409,35 @@ function _stokCacheKey(year, month) {
  *   Apps Script → Triggers → Add Trigger
  *   Function: onSheetChanged | Event source: From spreadsheet | Type: On change
  */
+const SCRIPT_WRITE_WINDOW_MS = 30000
+
+/** Tandai bahwa script sendiri baru saja menulis ke sheet. */
+function markScriptWrite() {
+  try {
+    PropertiesService.getScriptProperties().setProperty("LAST_SCRIPT_WRITE", String(Date.now()))
+  } catch (e) { /* fail silently */ }
+}
+
+function recentlyWrittenByScript() {
+  try {
+    const last = Number(PropertiesService.getScriptProperties().getProperty("LAST_SCRIPT_WRITE")) || 0
+    return Date.now() - last < SCRIPT_WRITE_WINDOW_MS
+  } catch (e) { return false }
+}
+
 function onSheetChanged(e) {
+  // Installable trigger ikut menyala untuk tulisan dari script ini sendiri
+  // (berbeda dari simple onEdit). Tanpa guard ini, tiap input lewat aplikasi
+  // membatalkan cache dua kali: sekali dari doPost, sekali dari trigger.
+  // doPost sudah membatalkan dengan cakupan bulan yang tepat, jadi di sini cukup
+  // dilewati — yang tersisa untuk trigger hanyalah edit manual di spreadsheet.
+  if (recentlyWrittenByScript()) {
+    Logger.log("[CACHE] onSheetChanged dilewati — perubahan berasal dari script")
+    return
+  }
   VALID_TYPES.forEach(function(type) { clearBarangCache(type) })
-  bumpStokGen()
-  Logger.log("[CACHE] Invalidated via onSheetChanged")
+  bumpStokGenAll()
+  Logger.log("[CACHE] Invalidated via onSheetChanged (edit manual)")
 }
 
 /** @returns {string|null} JSON utuh, atau null jika belum/tidak lengkap di cache. */
@@ -605,7 +739,7 @@ function doPost(e) {
 
     if (action === "rollover") {
       const ok = rolloverSaldo(data.cronSecret)
-      if (ok) bumpStokGen()
+      if (ok) bumpStokGenAll()
       return jsonResponse({ status: ok ? "success" : "unauthorized" })
     }
 
@@ -635,11 +769,26 @@ function doPost(e) {
     }
 
     try {
+      markScriptWrite()
       const res = dispatch(action, type, sheet, data)
-      // Semua action POST berpotensi mengubah angka laporan stok. Dinaikkan tanpa
-      // memeriksa sukses/gagal — invalidasi berlebih cuma memicu hitung ulang,
-      // sedangkan invalidasi yang terlewat menyajikan data basi.
-      bumpStokGen()
+
+      // Cakupan invalidasi sengaja dibedakan.
+      //
+      // Untuk action "add*", tanggalnya ada di payload sehingga bulan yang
+      // terdampak bisa dipastikan — cache bulan lain dibiarkan hidup.
+      //
+      // Untuk update/delete, tanggal LAMA baris itu tidak ada di payload (delete
+      // hanya mengirim id), jadi bulan terdampak tidak bisa dipastikan dan cache
+      // seluruh bulan dibatalkan. Begitu pula perubahan master barang, yang
+      // berdampak ke semua periode.
+      //
+      // Tetap dijalankan tanpa memeriksa sukses/gagal: invalidasi berlebih cuma
+      // memicu hitung ulang, sedangkan yang terlewat menyajikan data basi.
+      const isAdd = action.indexOf("add") === 0 && !isBarangAction
+      const from  = isAdd ? earliestMonthInPayload(data) : null
+      if (from) bumpStokGenFrom(from.year, from.month)
+      else bumpStokGenAll()
+
       return res
     } finally {
       lock.releaseLock()
@@ -1125,7 +1274,7 @@ function handleGetStok(month, year, forceRefresh) {
   }
 
   // v3.2: hasil yang sudah dihitung dilayani langsung tanpa menyentuh sheet.
-  // Cache dibuang otomatis begitu ada POST (lihat bumpStokGen di doPost).
+  // Cache dibuang otomatis begitu ada POST (lihat invalidasi generasi di doPost).
   // forceRefresh juga membuang cache barang, supaya kolom F/G yang diedit manual
   // di spreadsheet benar-benar terbaca ulang — bukan cuma melewati cache stok.
   if (forceRefresh) {
@@ -1373,7 +1522,7 @@ function fillSnapshotDerived() {
       batchInsertRows(snapshotSheet, newRows)
       // Bulan berikutnya di FILL_MONTHS harus melihat snapshot yang baru ditulis.
       resetMemo()
-      bumpStokGen()
+      bumpStokGenAll()
       Logger.log("[FILL] Saved " + newRows.length + " rows untuk " + year + "-" + month)
     } else {
       Logger.log("[FILL] Snapshot " + year + "-" + month + " sudah ada semua, dilewati.")
