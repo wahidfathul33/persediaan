@@ -26,12 +26,12 @@ export default function StokPage() {
   const abortRef = useRef<AbortController | null>(null)
   const requestSeqRef = useRef(0)
 
-  const load = useCallback(async (targetMonth: number, targetYear: number, signal: AbortSignal, requestSeq: number) => {
+  const load = useCallback(async (targetMonth: number, targetYear: number, signal: AbortSignal, requestSeq: number, refresh = false) => {
     setLoading(true)
     setError('')
     try {
       const [stok, grouped] = await Promise.all([
-        getStokData(targetMonth, targetYear, { signal }),
+        getStokData(targetMonth, targetYear, { signal, refresh }),
         getBarangGrouped({ signal }),
       ])
 
@@ -56,7 +56,7 @@ export default function StokPage() {
     }
   }, [])
 
-  const loadForPeriod = useCallback((targetMonth: number, targetYear: number) => {
+  const loadForPeriod = useCallback((targetMonth: number, targetYear: number, refresh = false) => {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -64,7 +64,7 @@ export default function StokPage() {
     const requestSeq = requestSeqRef.current + 1
     requestSeqRef.current = requestSeq
 
-    void load(targetMonth, targetYear, controller.signal, requestSeq)
+    void load(targetMonth, targetYear, controller.signal, requestSeq, refresh)
   }, [load])
 
   useEffect(() => {
@@ -126,7 +126,7 @@ export default function StokPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Laporan Stok</h1>
-        <button onClick={() => loadForPeriod(month, year)} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors">
+        <button onClick={() => loadForPeriod(month, year, true)} className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors">
           <RefreshCw size={14} /> Refresh
         </button>
       </div>

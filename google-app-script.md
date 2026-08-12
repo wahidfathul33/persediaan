@@ -289,6 +289,23 @@ function _stokCacheKey(year, month) {
   return "stok_v32_" + _stokGen() + "_" + year + "_" + month
 }
 
+/**
+ * Trigger: buang semua cache saat sheet diedit langsung dari Google Sheets.
+ *
+ * Tanpa ini, edit manual di kolom F/G tidak melewati doPost sehingga cache
+ * laporan stok tetap menyajikan angka lama sampai TTL habis (6 jam).
+ *
+ * PASANG SEBAGAI INSTALLABLE TRIGGER (wajib — simple trigger tidak boleh
+ * mengakses PropertiesService):
+ *   Apps Script → Triggers → Add Trigger
+ *   Function: onSheetChanged | Event source: From spreadsheet | Type: On change
+ */
+function onSheetChanged(e) {
+  VALID_TYPES.forEach(function(type) { clearBarangCache(type) })
+  bumpStokGen()
+  Logger.log("[CACHE] Invalidated via onSheetChanged")
+}
+
 /** @returns {string|null} JSON utuh, atau null jika belum/tidak lengkap di cache. */
 function getStokCached(year, month) {
   try {
@@ -508,7 +525,9 @@ function doGet(e) {
     if (action === "barang") return handleGetBarang(type)
     if (action === "keluar") return handleGetKeluar(type, month, year)
     if (action === "masuk")  return handleGetMasuk(type, month, year)
-    if (action === "stok")   return handleGetStok(month, year)
+    // refresh=1 melewati cache dan menghitung ulang dari sheet — dipakai tombol
+    // Refresh di halaman laporan stok.
+    if (action === "stok")   return handleGetStok(month, year, e.parameter.refresh === "1")
 
     return errorResponse("unknown action: " + action)
 
@@ -1091,7 +1110,7 @@ function rolloverSaldo(secret) {
  *   - Current month : live col G
  *   - Past months   : saldo_awal + total_masuk - total_keluar
  */
-function handleGetStok(month, year) {
+function handleGetStok(month, year, forceRefresh) {
   const t = _t("getStok")
 
   if (!month || !year) return errorResponse("month dan year wajib diisi")
@@ -1105,7 +1124,13 @@ function handleGetStok(month, year) {
 
   // v3.2: hasil yang sudah dihitung dilayani langsung tanpa menyentuh sheet.
   // Cache dibuang otomatis begitu ada POST (lihat bumpStokGen di doPost).
-  const cachedJson = getStokCached(year, month)
+  // forceRefresh juga membuang cache barang, supaya kolom F/G yang diedit manual
+  // di spreadsheet benar-benar terbaca ulang — bukan cuma melewati cache stok.
+  if (forceRefresh) {
+    VALID_TYPES.forEach(function(type) { clearBarangCache(type) })
+  }
+
+  const cachedJson = forceRefresh ? null : getStokCached(year, month)
   if (cachedJson) {
     Logger.log("[CACHE] getStok " + year + "-" + month + " HIT")
     _te(t)

@@ -96,28 +96,54 @@ function parseDate(val: unknown): string {
 }
 
 // Apps Script sesekali membalas 404 dari host redirect script.googleusercontent.com
-// walau deployment-nya sehat. Error ini transien, jadi GET diulang beberapa kali.
-const RETRY_DELAYS_MS = [600, 1500, 3000]
+// walau deployment-nya sehat. Error ini transien, jadi GET diulang.
+//
+// Yang dijaga ketat di sini adalah WAKTU TUNGGU PENGGUNA, bukan jumlah percobaan.
+// Latensi Apps Script sangat bervariasi (terukur 2 detik s/d 40 detik untuk request
+// yang sama), jadi mengulang 4 kali tanpa batas waktu bisa membuat layar berputar
+// hampir 2 menit. TOTAL_BUDGET_MS memutus rantai itu: begitu anggaran habis,
+// percobaan berikutnya tidak dimulai dan error langsung ditampilkan.
+const RETRY_DELAYS_MS = [400, 1200]
+const TOTAL_BUDGET_MS = 45000
+const PER_ATTEMPT_TIMEOUT_MS = 25000
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Gabungkan signal pemanggil dengan timeout per percobaan. */
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms)
+  return signal ? AbortSignal.any([signal, timeout]) : timeout
 }
 
 async function apiFetch(input: RequestInfo, init?: RequestInit) {
   // POST tidak boleh diulang otomatis — berisiko dobel tulis ke sheet.
   const canRetry = !init?.method || init.method.toUpperCase() === 'GET'
   const attempts = canRetry ? RETRY_DELAYS_MS.length + 1 : 1
+  const callerSignal = init?.signal ?? undefined
+  const startedAt = Date.now()
 
   let lastError: unknown
   for (let i = 0; i < attempts; i++) {
     if (i > 0) await sleep(RETRY_DELAYS_MS[i - 1])
+
+    // Timeout percobaan ini tidak boleh melampaui sisa anggaran, supaya total
+    // waktu tunggu benar-benar terkunci di TOTAL_BUDGET_MS.
+    const remaining = TOTAL_BUDGET_MS - (Date.now() - startedAt)
+    if (remaining <= 0) break
+
     try {
-      const res = await fetch(input, init)
+      const res = await fetch(input, {
+        ...init,
+        signal: withTimeout(callerSignal, Math.min(PER_ATTEMPT_TIMEOUT_MS, remaining)),
+      })
       if (res.ok) return res
       lastError = new Error(`HTTP ${res.status}`)
     } catch (err) {
-      // Abort dari pemanggil bukan kegagalan jaringan — jangan diulang.
-      if (err instanceof DOMException && err.name === 'AbortError') throw err
+      // Abort dari pemanggil (ganti bulan / pindah halaman) bukan kegagalan —
+      // jangan diulang. Timeout per percobaan boleh diulang.
+      if (callerSignal?.aborted) throw err
       lastError = err
     }
   }
@@ -126,6 +152,11 @@ async function apiFetch(input: RequestInfo, init?: RequestInit) {
 
 interface FetchOptions {
   signal?: AbortSignal
+}
+
+interface StokFetchOptions extends FetchOptions {
+  /** Paksa Apps Script menghitung ulang, melewati cache 6 jam miliknya. */
+  refresh?: boolean
 }
 
 function parseBarangRow(r: unknown[]): Barang {
@@ -212,8 +243,10 @@ export async function deleteKeluar(type: KeluarType, id: string): Promise<void> 
   await postJSON({ id, type, action: 'delete' })
 }
 
-export async function getStokData(month: number, year: number, options?: FetchOptions): Promise<StokItem[]> {
-  const res = await apiFetch(`${BASE_URL}?action=stok&month=${month}&year=${year}`, { cache: 'no-store', signal: options?.signal })
+export async function getStokData(month: number, year: number, options?: StokFetchOptions): Promise<StokItem[]> {
+  // refresh=1 memaksa Apps Script menghitung ulang dari sheet, melewati cache-nya.
+  const url = `${BASE_URL}?action=stok&month=${month}&year=${year}` + (options?.refresh ? '&refresh=1' : '')
+  const res = await apiFetch(url, { cache: 'no-store', signal: options?.signal })
   const data: unknown = await res.json()
   if (!Array.isArray(data)) return []
   return data.map((r) => parseStokRow(r))
