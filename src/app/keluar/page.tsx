@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { getKeluar, getBarangGrouped, updateKeluar, deleteKeluar, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
+import { getKeluarGrouped, getBarangGrouped, updateKeluar, deleteKeluar, type Keluar, type Barang, type BarangGrouped, type KeluarType } from '@/lib/api'
 import Modal from '@/components/Modal'
 import SearchableSelect from '@/components/SearchableSelect'
 
@@ -156,13 +156,12 @@ export default function KeluarPage() {
     setLoading(true)
     setError('')
     try {
-      const [atkData, rtData, obatData, grouped] = await Promise.all([
-        getKeluar('atk', month, year),
-        getKeluar('rt', month, year),
-        getKeluar('obat', month, year),
+      // Satu request untuk ketiga type — bukan tiga.
+      const [keluar, grouped] = await Promise.all([
+        getKeluarGrouped(month, year),
         getBarangGrouped(),
       ])
-      setAllKeluar({ atk: atkData, rt: rtData, obat: obatData })
+      setAllKeluar(keluar)
       setBarangGrouped(grouped)
     } catch {
       setError('Gagal memuat data.')

@@ -1,16 +1,18 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { Package, PackagePlus, PackageMinus, BarChart3, AlertTriangle, XCircle, ChevronRight } from 'lucide-react'
-import { getBarangGrouped, getKeluar, getMasuk, getStokData, type StokItem } from '@/lib/api'
+import { Package, PackagePlus, PackageMinus, BarChart3, AlertTriangle, XCircle, ChevronRight, RefreshCw } from 'lucide-react'
+import { getBarangGrouped, getKeluarGrouped, getMasukGrouped, getStokData, type StokItem } from '@/lib/api'
 
+// null = angkanya tidak berhasil diambil. Ditampilkan sebagai "—", bukan 0,
+// supaya kegagalan jaringan tidak terbaca sebagai "memang tidak ada data".
 interface Summary {
-  totalBarang: number
-  totalKeluar: number
-  totalMasuk: number
-  stokHabis: number
-  stokRendah: number
+  totalBarang: number | null
+  totalKeluar: number | null
+  totalMasuk: number | null
+  stokHabis: number | null
+  stokRendah: number | null
   stokItems: StokItem[]
 }
 
@@ -18,37 +20,66 @@ export default function DashboardPage() {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [incomplete, setIncomplete] = useState<string[]>([])
+
+  // reset hanya perlu saat pengguna menekan Refresh. Pada pemuatan pertama,
+  // ketiga state itu sudah bernilai awal yang benar, dan menyetelnya ulang di
+  // dalam effect justru memicu render berantai.
+  const load = useCallback(async (reset: boolean) => {
+    const now = new Date()
+    const month = now.getMonth() + 1
+    const year = now.getFullYear()
+
+    if (reset) {
+      setLoading(true)
+      setError('')
+      setIncomplete([])
+    }
+
+    // Dulu 8 request paralel di sini; endpoint grouped memangkasnya jadi 4.
+    //
+    // allSettled, bukan all: Apps Script membalas 404 transien secara berkelompok
+    // (terukur 35% gagal, kadang 6 kali berturut-turut). Dengan Promise.all, satu
+    // sub-request yang apes menghanguskan seluruh dashboard termasuk tiga hasil
+    // yang sebetulnya sukses. Di sini yang berhasil tetap ditampilkan.
+    const [barangRes, keluarRes, masukRes, stokRes] = await Promise.allSettled([
+      getBarangGrouped(),
+      getKeluarGrouped(month, year),
+      getMasukGrouped(month, year),
+      getStokData(month, year),
+    ])
+
+    const gagal: string[] = []
+    if (barangRes.status === 'rejected') gagal.push('Jenis Barang')
+    if (keluarRes.status === 'rejected') gagal.push('Keluar Bulan Ini')
+    if (masukRes.status === 'rejected') gagal.push('Masuk Bulan Ini')
+    if (stokRes.status === 'rejected') gagal.push('Ringkasan Stok')
+
+    if (gagal.length === 4) {
+      setError('Gagal memuat data dari Google Apps Script.')
+      setLoading(false)
+      return
+    }
+
+    const countAll = (g: { atk: unknown[]; rt: unknown[]; obat: unknown[] }) =>
+      g.atk.length + g.rt.length + g.obat.length
+    const stokItems = stokRes.status === 'fulfilled' ? stokRes.value : []
+
+    setSummary({
+      totalBarang: barangRes.status === 'fulfilled' ? countAll(barangRes.value) : null,
+      totalKeluar: keluarRes.status === 'fulfilled' ? countAll(keluarRes.value) : null,
+      totalMasuk:  masukRes.status === 'fulfilled' ? countAll(masukRes.value) : null,
+      stokHabis:   stokRes.status === 'fulfilled' ? stokItems.filter((s) => s.sisa_saldo <= 0).length : null,
+      stokRendah:  stokRes.status === 'fulfilled' ? stokItems.filter((s) => s.sisa_saldo > 0 && s.sisa_saldo <= 5).length : null,
+      stokItems,
+    })
+    setIncomplete(gagal)
+    setLoading(false)
+  }, [])
 
   useEffect(() => {
-    async function load() {
-      const now = new Date()
-      const month = now.getMonth() + 1
-      const year = now.getFullYear()
-      try {
-        const [grouped, atkK, rtK, obatK, atkM, rtM, obatM, stokItems] = await Promise.all([
-          getBarangGrouped(),
-          getKeluar('atk', month, year),
-          getKeluar('rt', month, year),
-          getKeluar('obat', month, year),
-          getMasuk('atk', month, year),
-          getMasuk('rt', month, year),
-          getMasuk('obat', month, year),
-          getStokData(month, year),
-        ])
-        const totalBarang = grouped.atk.length + grouped.rt.length + grouped.obat.length
-        const totalKeluar = atkK.length + rtK.length + obatK.length
-        const totalMasuk  = atkM.length + rtM.length + obatM.length
-        const stokHabis   = stokItems.filter((s) => s.sisa_saldo <= 0).length
-        const stokRendah  = stokItems.filter((s) => s.sisa_saldo > 0 && s.sisa_saldo <= 5).length
-        setSummary({ totalBarang, totalKeluar, totalMasuk, stokHabis, stokRendah, stokItems })
-      } catch {
-        setError('Gagal memuat data. Pastikan URL API sudah benar di .env.local')
-      } finally {
-        setLoading(false)
-      }
-    }
-    load()
-  }, [])
+    void (async () => { await load(false) })()
+  }, [load])
 
   if (loading)
     return (
@@ -63,9 +94,14 @@ export default function DashboardPage() {
         <p className="font-semibold">⚠ Terjadi Kesalahan</p>
         <p className="mt-1 text-sm">{error}</p>
         <p className="mt-2 text-sm">
-          Edit file <code className="bg-red-100 px-1 rounded">.env.local</code> dan isi{' '}
-          <code className="bg-red-100 px-1 rounded">NEXT_PUBLIC_API_URL</code> dengan URL Google Apps Script Anda.
+          Gagal memuat data.
         </p>
+        <button
+          onClick={() => void load(true)}
+          className="mt-4 flex items-center gap-1.5 bg-white border border-red-300 text-red-700 px-3 py-2 rounded-lg text-sm hover:bg-red-100 transition-colors"
+        >
+          <RefreshCw size={14} /> Coba Lagi
+        </button>
       </div>
     )
 
@@ -88,7 +124,25 @@ export default function DashboardPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 mb-6">Dashboard</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+        <button
+          onClick={() => void load(true)}
+          className="flex items-center gap-1.5 border border-gray-200 text-gray-600 px-3 py-2 rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-colors"
+        >
+          <RefreshCw size={14} /> Refresh
+        </button>
+      </div>
+
+      {incomplete.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 mb-6 text-amber-800 text-sm flex items-start gap-2">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>
+            Sebagian data gagal dimuat ({incomplete.join(', ')}) dan ditandai <strong>—</strong>.
+            Ini biasanya gangguan sementara Google Apps Script. Tekan Refresh untuk mencoba lagi.
+          </span>
+        </div>
+      )}
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
@@ -101,7 +155,7 @@ export default function DashboardPage() {
               className={`${c.color} text-white rounded-2xl p-5 shadow-sm hover:shadow-md hover:scale-[1.02] transition-all`}
             >
               <Icon size={24} className="mb-3 opacity-90" />
-              <div className="text-3xl font-bold">{c.value}</div>
+              <div className="text-3xl font-bold">{c.value ?? '—'}</div>
               <div className="text-sm opacity-85 mt-1 font-medium">{c.label}</div>
             </Link>
           )
