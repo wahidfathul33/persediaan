@@ -1,12 +1,36 @@
 /**
  * ============================================================
  *  INVENTORY MANAGEMENT — Google Apps Script
- *  Production-ready | v3.3
+ *  Production-ready | v3.6
  * ============================================================
+ *
+ *  CHANGELOG v3.6 (MODUL GUDANG):
+ *  - Action "gudang*" untuk halaman /gudang di aplikasi web. Hanya dilayani jika
+ *    payload membawa gudangSecret yang sama dengan Script Property GUDANG_SECRET.
+ *    Secret itu hanya ada di server Next.js, tidak pernah di browser.
+ *  - gudangKartu / gudangSimpanKartu: lihat dan perbaiki seluruh riwayat satu
+ *    barang dalam satu request. Saldo (kolom I, snapshot, F, G) dihitung ulang
+ *    dari saldo pembuka + transaksi.
+ *  - cekKontinuitas, rebuildSaldo, repairDuplicateIds, fillSnapshotDerived, dan
+ *    rollover kini punya versi yang mengembalikan JSON (dipakai menu Gudang).
+ *  - Sheet "Log Gudang" dibuat otomatis: catatan setiap perubahan dari menu Gudang.
+ *
+ *  CHANGELOG v3.5 (KOREKSI — mengubah hasil penulisan):
+ *  - ID transaksi/barang tidak lagi dari getLastRow() (kembar setelah baris
+ *    dihapus) melainkan reserveIds(): penghitung permanen + nomor terbesar.
+ *    SpreadsheetApp.flush() sebelum lock dilepas. Update/delete menolak ID kembar.
+ *    Utility: repairDuplicateIds(apply).
+ *  - Kaskade saldo: edit/hapus/input mundur transaksi lama kini menggeser kolom I
+ *    semua transaksi sesudahnya, Snapshot Saldo bulan-bulan berikutnya, dan
+ *    kolom F master (cascadeSaldoMulti). Dulu hanya satu baris yang berubah dan
+ *    kolom I-nya malah diisi saldo HARI INI. Urutan satu barang: tanggal →
+ *    masuk sebelum keluar → nomor ID.
+ *    Utility: rebuildSaldo(apply) menghitung ulang semuanya dari kolom G.
  *
  *  SETUP:
  *  1. Extensions → Apps Script → Project Settings → Script Properties
  *     Tambahkan: ROLLOVER_SECRET = <secret sama dengan env Vercel>
+ *                GUDANG_SECRET   = <secret sama dengan env Vercel GUDANG_SECRET>
  *
  *  Sheet yang dibutuhkan (nama harus persis):
  *    Barang ATK / Barang RT / Barang Obat
@@ -16,6 +40,7 @@
  *    Batch Log        ← dibuat OTOMATIS saat penyimpanan pertama, jangan dihapus.
  *                       Berisi catatan permanen id penyimpanan agar input yang
  *                       diulang setelah gagal tidak tertulis dua kali.
+ *    Log Gudang       ← dibuat OTOMATIS saat perubahan pertama dari menu Gudang.
  *
  *  Kolom Sheet Barang  : A=id  B=kode_barang  C=nama_barang  D=merk  E=satuan  F=saldo_awal  G=sisa_saldo
  *  Kolom Sheet Keluar  : A=id  B=id_barang    C=kode_barang  D=nama  E=merk    F=satuan      G=tanggal  H=qty  I=sisa_saldo  J=keterangan
@@ -245,14 +270,20 @@ function buildBarangMap(rows) {
  * Key: id (string)
  * Value: { rowIndex, id_barang, qty }
  */
+const DUP_ID_MSG = "ID transaksi kembar, tidak bisa diubah/dihapus sebelum diperbaiki (jalankan repairDuplicateIds di Apps Script): "
+
 function buildTransaksiMap(rows) {
   const map = {}
   for (let i = 0; i < rows.length; i++) {
     const id = String(rows[i][0]).trim()
     if (!id) continue
+    // ID kembar: jangan diam-diam menimpa. Update/delete harus menolak, karena
+    // baris mana yang dimaksud tidak bisa dipastikan (lihat repairDuplicateIds).
+    if (map[id]) { map[id].duplicate = true; continue }
     map[id] = {
       rowIndex:  i + 2,
       id_barang: String(rows[i][1]).trim(),
+      tanggal:   rows[i][6],
       qty:       Number(rows[i][7]) || 0,
     }
   }
@@ -733,13 +764,1184 @@ function batchInsertRows(sheet, rows) {
   sheet.getRange(startRow, 1, rows.length, rows[0].length).setValues(rows)
 }
 
+// ── ID unik ───────────────────────────────────────────────────────────────────
+//
+// Dulu ID dibuat dari getLastRow(). Itu menghasilkan ID kembar begitu ada baris
+// yang dihapus (deleteRow / deleteMasuk / deleteBarang): lastRow turun, sehingga
+// ID berikutnya sama dengan ID baris terakhir yang masih ada. Hal yang sama
+// terjadi kalau tulisan request sebelumnya belum terflush saat lock dilepas.
+//
+// Sekarang nomor urut = max(penghitung permanen, nomor terbesar di kolom A) + 1.
+// Penghitung disimpan di Script Properties per prefix+type dan hanya naik, jadi
+// ID yang pernah dipakai tidak muncul lagi walau barisnya sudah dihapus.
+//
+// WAJIB dipanggil di dalam script lock (doPost sudah menjamin ini).
+
+const ID_SEQ_PREFIX = "ID_SEQ_"
+
+function parseIdSeq(id) {
+  const m = /-(\d+)$/.exec(String(id).trim())
+  return m ? Number(m[1]) : 0
+}
+
 /**
- * Generate next ID for a sheet.
- * Format: PREFIX-TYPELABEL-NNNN  (e.g. DB-ATK-0012)
+ * Cadangkan `count` ID berurutan. Format: PREFIX-TYPELABEL-NNNN (DB-ATK-0012).
+ * @returns {string[]}
  */
-function generateId(sheet, prefix, type) {
+function reserveIds(sheet, prefix, type, count) {
+  const props = PropertiesService.getScriptProperties()
+  const key   = ID_SEQ_PREFIX + prefix + "_" + type
+  let   top   = Number(props.getProperty(key)) || 0
+
   const lastRow = sheet.getLastRow()
-  return prefix + "-" + TYPE_LABEL[type] + "-" + String(lastRow).padStart(4, "0")
+  if (lastRow >= 2) {
+    sheet.getRange(2, 1, lastRow - 1, 1).getValues().forEach(function(r) {
+      top = Math.max(top, parseIdSeq(r[0]))
+    })
+  }
+
+  props.setProperty(key, String(top + count))
+
+  const ids = []
+  for (let i = 1; i <= count; i++) {
+    ids.push(prefix + "-" + TYPE_LABEL[type] + "-" + String(top + i).padStart(4, "0"))
+  }
+  return ids
+}
+
+function generateId(sheet, prefix, type) {
+  return reserveIds(sheet, prefix, type, 1)[0]
+}
+
+/**
+ * Utility manual (jalankan dari editor Apps Script) untuk memperbaiki ID kembar
+ * yang sudah terlanjur ada di sheet Keluar/Masuk. Baris PERTAMA tetap memakai ID
+ * lamanya; baris kembar berikutnya diberi ID baru.
+ *
+ *   repairDuplicateIds()        → hanya melaporkan di log (dry run)
+ *   repairDuplicateIds(true)    → benar-benar menulis perbaikan
+ *
+ * Master barang sengaja tidak disentuh: id_barang dirujuk dari sheet transaksi,
+ * jadi ID barang kembar harus dibereskan manual. Kembarannya hanya dilaporkan.
+ */
+function repairDuplicateIds(apply) {
+  const lock = LockService.getScriptLock()
+  lock.waitLock(30000)
+  try {
+    markScriptWrite()
+    repairDuplicateIdsCore(apply)
+  } finally {
+    lock.releaseLock()
+  }
+}
+
+/**
+ * Isi repairDuplicateIds tanpa lock — pemanggil WAJIB sudah memegang script lock.
+ * @returns {{ barang: Object[], transaksi: Object[] }} laporan untuk menu Gudang
+ */
+function repairDuplicateIdsCore(apply) {
+  const report = { barang: [], transaksi: [] }
+
+  VALID_TYPES.forEach(function(type) {
+    const bIds = readRows(getBarangSheet(type)).map(function(r) { return String(r[0]).trim() })
+    const bSeen = {}
+    bIds.forEach(function(id) {
+      if (!id) return
+      if (bSeen[id]) {
+        Logger.log("[DUP-BARANG] " + type + " id=" + id + " kembar — perbaiki manual")
+        report.barang.push({ type: type, id: id })
+      }
+      bSeen[id] = true
+    })
+  })
+
+  const jobs = []
+  VALID_TYPES.forEach(function(type) {
+    jobs.push({ sheet: getKeluarSheet(type), prefix: "DB", type: type })
+    jobs.push({ sheet: getMasukSheet(type),  prefix: "CR", type: type })
+  })
+
+  jobs.forEach(function(job) {
+    const last = job.sheet.getLastRow()
+    if (last < 2) return
+
+    const range = job.sheet.getRange(2, 1, last - 1, 1)
+    const ids   = range.getValues()
+    const seen  = {}
+    const dups  = []
+
+    ids.forEach(function(r, i) {
+      const id = String(r[0]).trim()
+      if (!id) return
+      if (seen[id]) dups.push(i)
+      else seen[id] = true
+    })
+    if (dups.length === 0) return
+
+    Logger.log("[DUP] " + job.sheet.getName() + ": " + dups.length + " baris kembar" +
+      (apply ? " — diperbaiki" : " (dry run)"))
+    const entry = {
+      sheet: job.sheet.getName(),
+      baris: dups.map(function(i) { return { row: i + 2, id: String(ids[i][0]).trim() } }),
+    }
+    report.transaksi.push(entry)
+    if (!apply) return
+
+    const fresh = reserveIds(job.sheet, job.prefix, job.type, dups.length)
+    dups.forEach(function(rowIdx, n) {
+      entry.baris[n].idBaru = fresh[n]
+      ids[rowIdx][0] = fresh[n]
+    })
+    range.setValues(ids)
+  })
+
+  if (apply) {
+    SpreadsheetApp.flush()
+    resetMemo()
+    bumpStokGenAll()
+  }
+  return report
+}
+
+// ── Kaskade saldo (v3.5) ──────────────────────────────────────────────────────
+//
+// Saldo disimpan di tiga tempat yang semuanya turunan dari transaksi:
+//   kolom I tiap baris Keluar/Masuk  → saldo SETELAH transaksi itu
+//   Snapshot Saldo                   → saldo_awal tiap bulan
+//   kolom F master barang            → saldo_awal bulan berjalan (= snapshot bulan ini)
+// Kolom G master (sisa_saldo) dijaga lewat delta oleh tiap handler.
+//
+// Mengubah/menghapus/menyisipkan transaksi lama harus menggeser SEMUA saldo
+// sesudahnya sebesar efek transaksi itu — kalau tidak, pengguna harus mengedit
+// satu per satu. Fungsi di bawah melakukannya dalam satu request, di dalam lock.
+//
+// Urutan transaksi satu barang: tanggal, lalu masuk sebelum keluar, lalu nomor
+// di ID. Efek: masuk = +qty, keluar = -qty.
+
+const KIND_RANK = { masuk: 0, keluar: 1 }
+
+/** Tanggal → YYYYMMDD. Sama untuk Date dari sheet maupun string "YYYY-MM-DD". */
+function dayKeyOf(val) {
+  if (val instanceof Date) {
+    return val.getFullYear() * 10000 + (val.getMonth() + 1) * 100 + val.getDate()
+  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(val))
+  if (m) return Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3])
+  const d = new Date(val)
+  return isNaN(d.getTime()) ? 0 : dayKeyOf(d)
+}
+
+function currentYm() {
+  const n = new Date()
+  return n.getFullYear() * 100 + (n.getMonth() + 1)
+}
+
+function makePos(kind, tanggal, id) {
+  return [dayKeyOf(tanggal), KIND_RANK[kind], parseIdSeq(id)]
+}
+
+/** true jika posisi a berada SESUDAH posisi b. */
+function posAfter(a, b) {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i]
+  }
+  return false
+}
+
+function cmpEntry(a, b) {
+  return posAfter(a.pos, b.pos) ? 1 : (posAfter(b.pos, a.pos) ? -1 : 0)
+}
+
+function effectOf(kind, qty) {
+  return kind === "masuk" ? Number(qty) : -Number(qty)
+}
+
+/** Kumpulkan baris Keluar/Masuk sebuah type menjadi ledger per id_barang. */
+function buildLedgers(rowsBy, onlyIds) {
+  const ledger = {}
+  ;["masuk", "keluar"].forEach(function(kind) {
+    rowsBy[kind].forEach(function(r, i) {
+      const idB = String(r[1]).trim()
+      if (onlyIds && !onlyIds[idB]) return
+      if (!ledger[idB]) ledger[idB] = []
+      ledger[idB].push({
+        kind:     kind,
+        rowIndex: i + 2,
+        pos:      makePos(kind, r[6], r[0]),
+        eff:      effectOf(kind, Number(r[7]) || 0),
+        saldo:    Number(r[8]) || 0,
+      })
+    })
+  })
+  Object.keys(ledger).forEach(function(k) { ledger[k].sort(cmpEntry) })
+  return ledger
+}
+
+/** suffix[i] = jumlah efek entri ke-i dst. suffix[n] = 0. */
+function suffixEffects(led) {
+  const suffix = new Array(led.length + 1)
+  suffix[led.length] = 0
+  for (let i = led.length - 1; i >= 0; i--) suffix[i] = suffix[i + 1] + led[i].eff
+  return suffix
+}
+
+/**
+ * Pergeseran saldo_awal bulan `ym` (saldo di AWAL bulan itu) akibat perubahan:
+ * hanya transaksi di bulan SEBELUM ym yang ikut menggeser.
+ */
+function shiftAt(ch, ym) {
+  let d = 0
+  ch.added.forEach(function(a)   { if (Math.floor(a.pos[0] / 100) < ym) d += a.eff })
+  ch.removed.forEach(function(r) { if (Math.floor(r.pos[0] / 100) < ym) d -= r.eff })
+  return d
+}
+
+/**
+ * Terapkan perubahan ledger beberapa barang sekaligus (satu type).
+ * Dipanggil SETELAH perubahan struktural (baris sudah ditulis/dihapus dan kolom G
+ * master sudah benar), karena ledger dibaca ulang dari sheet.
+ *
+ * @param {Object} changes  { id_barang: { removed, added, saldoAkhir } }
+ *   removed:    [{ pos, eff }]                 transaksi lama yang lenyap dari barang ini
+ *   added:      [{ kind, rowIndex, pos, eff }] transaksi baru yang sudah tertulis di sheet
+ *   saldoAkhir: sisa_saldo master barang SESUDAH perubahan — jangkar untuk baris baru
+ *
+ * Baris yang ada digeser sebesar efek perubahan di sebelum-nya. Baris baru tidak
+ * digeser melainkan dijangkar: saldo = saldoAkhir - jumlah efek baris sesudahnya.
+ */
+function cascadeSaldoMulti(type, changes) {
+  const ids = Object.keys(changes).filter(function(id) {
+    return changes[id].removed.length > 0 || changes[id].added.length > 0
+  })
+  if (ids.length === 0) return
+
+  const only = {}
+  ids.forEach(function(id) { only[id] = true })
+
+  const rowsBy = { masuk: readRows(getMasukSheet(type)), keluar: readRows(getKeluarSheet(type)) }
+  const ledger = buildLedgers(rowsBy, only)
+  const edits  = { masuk: {}, keluar: {} }   // rowIndex → saldo baru
+
+  // 1. Kolom I baris-baris transaksi
+  ids.forEach(function(idB) {
+    const ch  = changes[idB]
+    const led = ledger[idB] || []
+    const suffix  = suffixEffects(led)
+    const isAdded = {}
+    ch.added.forEach(function(a) { isAdded[a.kind + "|" + a.rowIndex] = true })
+
+    led.forEach(function(e, i) {
+      if (isAdded[e.kind + "|" + e.rowIndex]) {
+        edits[e.kind][e.rowIndex] = ch.saldoAkhir - suffix[i + 1]
+        return
+      }
+      let d = 0
+      ch.added.forEach(function(a)   { if (posAfter(e.pos, a.pos)) d += a.eff })
+      ch.removed.forEach(function(r) { if (posAfter(e.pos, r.pos)) d -= r.eff })
+      if (d !== 0) edits[e.kind][e.rowIndex] = e.saldo + d
+    })
+  })
+
+  ;["masuk", "keluar"].forEach(function(kind) {
+    const idxs = Object.keys(edits[kind]).map(Number)
+    if (idxs.length === 0) return
+    // Hanya rentang yang berubah yang ditulis, bukan seluruh kolom.
+    const lo = Math.min.apply(null, idxs)
+    const hi = Math.max.apply(null, idxs)
+    const col = []
+    for (let r = lo; r <= hi; r++) {
+      col.push([edits[kind][r] !== undefined ? edits[kind][r] : rowsBy[kind][r - 2][8]])
+    }
+    const sheet = kind === "masuk" ? getMasukSheet(type) : getKeluarSheet(type)
+    sheet.getRange(lo, 9, col.length, 1).setValues(col)
+  })
+
+  // 2. Snapshot Saldo bulan-bulan sesudah transaksi
+  if (SHEETS.snapshot) {
+    const snapRows = readRows(SHEETS.snapshot)
+    let changed = false
+    const colE = snapRows.map(function(r) {
+      if (String(r[2]) === type) {
+        const ch = changes[String(r[3]).trim()]
+        if (ch) {
+          const d = shiftAt(ch, Number(r[0]) * 100 + Number(r[1]))
+          if (d !== 0) { changed = true; return [(Number(r[4]) || 0) + d] }
+        }
+      }
+      return [r[4]]
+    })
+    if (changed) {
+      SHEETS.snapshot.getRange(2, 5, colE.length, 1).setValues(colE)
+      resetMemo()
+    }
+  }
+
+  // 3. Kolom F master (= saldo_awal bulan berjalan)
+  const bSheet = getBarangSheet(type)
+  const bMap   = buildBarangMap(readRows(bSheet))
+  const nowYm  = currentYm()
+  ids.forEach(function(idB) {
+    const d = shiftAt(changes[idB], nowYm)
+    const b = bMap[idB]
+    if (d !== 0 && b) bSheet.getRange(b.rowIndex, 6).setValue(b.saldo_awal + d)
+  })
+  clearBarangCache(type)
+}
+
+/** Versi satu barang dari cascadeSaldoMulti. */
+function cascadeSaldo(type, idBarang, removed, added, saldoAkhir) {
+  const changes = {}
+  changes[String(idBarang)] = { removed: removed, added: added, saldoAkhir: saldoAkhir }
+  cascadeSaldoMulti(type, changes)
+}
+
+/** Ambil sampai n elemen yang tersebar merata (bukan n pertama, yang sering satu barang). */
+function sampleEvenly(arr, n) {
+  if (arr.length <= n) return arr
+  const step = arr.length / n
+  const out = []
+  for (let i = 0; i < n; i++) out.push(arr[Math.floor(i * step)])
+  return out
+}
+
+function fmtDay(dk) {
+  const y = Math.floor(dk / 10000)
+  const m = Math.floor(dk / 100) % 100
+  const d = dk % 100
+  return y + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0")
+}
+
+/**
+ * Diagnosa read-only (tidak menulis apa pun): periksa KONTINUITAS kolom I apa
+ * adanya, tanpa menjangkar ke kolom G.
+ *
+ * Untuk transaksi k dan k-1 milik satu barang (urut tanggal), seharusnya
+ *   I[k] - I[k-1] == efek[k]
+ * Selisihnya disebut "patahan". Dua pola patahan punya arti berbeda:
+ *
+ *   TERISOLASI  patahan +x lalu -x pada baris berikutnya → hanya SATU baris yang
+ *               nilainya salah (mis. dulu edit menulis saldo hari ini ke baris
+ *               lama, atau diketik manual). Menjangkar ke G memperbaikinya.
+ *   LONCATAN    saldo berpindah dan TETAP di level baru → ada kejadian yang
+ *               mengubah saldo tanpa transaksi (edit master barang, baris
+ *               dihapus/disisipkan manual, saldo awal diubah). Menjangkar ke G
+ *               akan MENULIS ULANG riwayat sebelum loncatan — periksa dulu.
+ *
+ * Juga dilaporkan "ujung ≠ G": barang yang kolom I terakhirnya tidak sama dengan G.
+ */
+function cekKontinuitas() {
+  VALID_TYPES.forEach(function(type) {
+    const bRows  = readRows(getBarangSheet(type))
+    const rowsBy = { masuk: readRows(getMasukSheet(type)), keluar: readRows(getKeluarSheet(type)) }
+    const ledger = buildLedgers(rowsBy, null)
+
+    function txId(e) { return rowsBy[e.kind][e.rowIndex - 2][0] }
+
+    let nBarang = 0, nPatah = 0, nIso = 0, nLonc = 0, nUjung = 0
+    const isoS = [], loncS = [], ujungS = [], fDrift = []
+    const nowYm = currentYm()
+
+    bRows.forEach(function(b) {
+      const idB = String(b[0]).trim()
+      if (!idB) return
+      const led = ledger[idB] || []
+      const G   = Number(b[6]) || 0
+
+      // F harus = G dikurangi transaksi bulan berjalan (juga untuk barang tanpa transaksi).
+      let netNow = 0
+      led.forEach(function(e) { if (Math.floor(e.pos[0] / 100) >= nowYm) netNow += e.eff })
+      const wantF = G - netNow
+      if (Math.abs((Number(b[5]) || 0) - wantF) > 1e-9) {
+        fDrift.push({ idB: idB, nama: b[2], f: Number(b[5]) || 0, g: G, want: wantF })
+      }
+
+      if (led.length === 0) return
+      nBarang++
+
+      const jumps = []
+      for (let i = 1; i < led.length; i++) {
+        const j = (led[i].saldo - led[i - 1].saldo) - led[i].eff
+        if (Math.abs(j) > 1e-9) jumps.push({ i: i, size: j })
+      }
+      if (jumps.length > 0) nPatah++
+
+      let k = 0
+      while (k < jumps.length) {
+        const a = jumps[k], nx = jumps[k + 1]
+        if (nx && nx.i === a.i + 1 && Math.abs(a.size + nx.size) < 1e-9) {
+          nIso++
+          const e = led[a.i]
+          isoS.push({ idB: idB, id: txId(e), dk: e.pos[0], now: e.saldo, size: a.size })
+          k += 2
+        } else {
+          nLonc++
+          const p = led[a.i - 1], e = led[a.i]
+          loncS.push({ idB: idB, dari: txId(p), dkDari: p.pos[0], ke: txId(e), dkKe: e.pos[0], size: a.size })
+          k++
+        }
+      }
+
+      const lastE = led[led.length - 1]
+      const ujung = G - lastE.saldo
+      if (Math.abs(ujung) > 1e-9) {
+        nUjung++
+        ujungS.push({ idB: idB, nama: b[2], g: G, last: lastE.saldo, id: txId(lastE), dk: lastE.pos[0] })
+      }
+    })
+
+    Logger.log("[KONTINUITAS] " + type + ": barang bertransaksi=" + nBarang + ", barang berpatahan=" + nPatah +
+      " | baris terisolasi=" + nIso + ", loncatan=" + nLonc + " | ujung≠G=" + nUjung)
+    sampleEvenly(isoS, 5).forEach(function(m) {
+      Logger.log("[KONTINUITAS] " + type + " TERISOLASI barang=" + m.idB + " " + m.id + " tgl=" + fmtDay(m.dk) +
+        " I=" + m.now + " (meleset " + m.size + " dari rantainya)")
+    })
+    sampleEvenly(loncS, 5).forEach(function(m) {
+      Logger.log("[KONTINUITAS] " + type + " LONCATAN barang=" + m.idB + " antara " + m.dari + " (" + fmtDay(m.dkDari) +
+        ") dan " + m.ke + " (" + fmtDay(m.dkKe) + ") sebesar " + m.size)
+    })
+
+    // SENGKETA: G sendiri tidak cocok dengan transaksi. Daftar LENGKAP (maks 60 per
+    // jenis) karena inilah yang harus dicek ke stok fisik sebelum menjangkar ke G.
+    ujungS.slice(0, 60).forEach(function(m) {
+      Logger.log("[SENGKETA] " + type + " barang=" + m.idB + " (" + m.nama + ") G=" + m.g +
+        " tetapi I transaksi terakhir=" + m.last + " (" + m.id + ", " + fmtDay(m.dk) + ") selisih " + (m.g - m.last))
+    })
+    fDrift.slice(0, 60).forEach(function(m) {
+      Logger.log("[SENGKETA] " + type + " barang=" + m.idB + " (" + m.nama + ") F=" + m.f + " G=" + m.g +
+        " F-seharusnya=" + m.want + " (F lebih " + (m.f - m.want) + ")")
+    })
+  })
+}
+
+/**
+ * Utility manual (jalankan dari editor Apps Script): hitung ulang SEMUA kolom I,
+ * Snapshot Saldo, dan kolom F dari transaksi, dijangkar pada sisa_saldo (kolom G)
+ * master sebagai kebenaran. Berguna setelah edit manual di spreadsheet atau untuk
+ * memeriksa apakah data lama konsisten.
+ *
+ *   rebuildSaldo()        → hanya melaporkan jumlah selisih di log (dry run)
+ *   rebuildSaldo(true)    → menulis perbaikan
+ *
+ * Catatan: kalau kolom G pernah dikoreksi tangan (stock opname) tanpa transaksi,
+ * koreksi itu ikut tercermin di saldo yang dihitung mundur dari G.
+ * Snapshot yang belum ada tidak dibuat — hanya yang sudah ada yang dikoreksi.
+ */
+function rebuildSaldo(apply) {
+  const lock = LockService.getScriptLock()
+  lock.waitLock(30000)
+  try {
+    markScriptWrite()
+    rebuildSaldoCore(apply)
+  } finally {
+    lock.releaseLock()
+  }
+}
+
+/**
+ * Isi rebuildSaldo tanpa lock — pemanggil WAJIB sudah memegang script lock.
+ * @returns {{ types: Object, snapshot: number, perBulan: Object }} jumlah selisih
+ */
+function rebuildSaldoCore(apply) {
+  const report = { types: {}, snapshot: 0, perBulan: {} }
+  const nowYm = currentYm()
+  const snapAll = SHEETS.snapshot ? readRows(SHEETS.snapshot) : []
+  const snapCol = snapAll.map(function(r) { return [r[4]] })
+  let snapFix = 0
+  const snapMiss = []
+
+  VALID_TYPES.forEach(function(type) {
+    const bSheet = getBarangSheet(type)
+    const bRows  = readRows(bSheet)
+    const rowsBy = { masuk: readRows(getMasukSheet(type)), keluar: readRows(getKeluarSheet(type)) }
+    const ledger = buildLedgers(rowsBy, null)
+
+    const outI = {
+      masuk:  rowsBy.masuk.map(function(r)  { return [r[8]] }),
+      keluar: rowsBy.keluar.map(function(r) { return [r[8]] }),
+    }
+    const fixI = { masuk: 0, keluar: 0 }
+    const gBy  = {}
+    let fixF = 0
+
+    // Bahan diagnosa untuk log (tidak mempengaruhi penulisan).
+    const missI     = []     // selisih kolom I
+    const missF     = []     // selisih kolom F
+    const diffsBy   = {}     // id_barang → { selisih: true } untuk baris I yang berbeda
+    const unsortedBy = {}    // id_barang → true jika urutan baris di sheet ≠ urutan tanggal
+
+    function differs(a, b) { return Math.abs((Number(a) || 0) - b) > 1e-9 }
+
+    // saldo di AWAL bulan ym = G - jumlah efek transaksi dari bulan ym ke depan
+    function opening(idB, ym) {
+      let s = gBy[idB]
+      ;(ledger[idB] || []).forEach(function(e) {
+        if (Math.floor(e.pos[0] / 100) >= ym) s -= e.eff
+      })
+      return s
+    }
+
+    bRows.forEach(function(b, bi) {
+      const idB = String(b[0]).trim()
+      if (!idB) return
+      const G = Number(b[6]) || 0
+      gBy[idB] = G
+
+      const led    = ledger[idB] || []
+      const suffix = suffixEffects(led)
+      // Apakah baris-baris barang ini di sheet (urutan input) sudah menurut tanggal?
+      // Dicek per sheet, karena Masuk dan Keluar adalah dua sheet terpisah.
+      ;["masuk", "keluar"].forEach(function(kind) {
+        let prev = 0
+        led.filter(function(e) { return e.kind === kind })
+           .sort(function(a, b) { return a.rowIndex - b.rowIndex })
+           .forEach(function(e) {
+             if (e.pos[0] < prev) unsortedBy[idB] = true
+             prev = Math.max(prev, e.pos[0])
+           })
+      })
+
+      led.forEach(function(e, i) {
+        const want = G - suffix[i + 1]
+        const now  = outI[e.kind][e.rowIndex - 2][0]
+        if (differs(now, want)) {
+          missI.push({
+            kind: e.kind, row: e.rowIndex, idTx: rowsBy[e.kind][e.rowIndex - 2][0],
+            idB: idB, dk: e.pos[0], now: Number(now) || 0, want: want,
+          })
+          if (!diffsBy[idB]) diffsBy[idB] = {}
+          diffsBy[idB][(Number(now) || 0) - want] = true
+          outI[e.kind][e.rowIndex - 2][0] = want
+          fixI[e.kind]++
+        }
+      })
+
+      const wantF = opening(idB, nowYm)
+      if (differs(b[5], wantF)) {
+        fixF++
+        missF.push({ idB: idB, f: Number(b[5]) || 0, g: G, want: wantF })
+        if (apply) bSheet.getRange(bi + 2, 6).setValue(wantF)
+      }
+    })
+
+    snapAll.forEach(function(r, i) {
+      if (String(r[2]) !== type) return
+      const idB = String(r[3]).trim()
+      if (gBy[idB] === undefined) return
+      const ym   = Number(r[0]) * 100 + Number(r[1])
+      const want = opening(idB, ym)
+      if (differs(r[4], want)) {
+        snapCol[i][0] = want
+        snapFix++
+        snapMiss.push({ type: type, idB: idB, ym: ym, now: Number(r[4]) || 0, want: want })
+      }
+    })
+
+    Logger.log("[REBUILD] " + type + ": kolom I masuk=" + fixI.masuk + " keluar=" + fixI.keluar +
+      ", kolom F=" + fixF + (apply ? " — diperbaiki" : " (dry run)"))
+    report.types[type] = { iMasuk: fixI.masuk, iKeluar: fixI.keluar, f: fixF }
+
+    // ── Diagnosa: bantu menentukan PENYEBAB selisih ──
+    const barangMiss = Object.keys(diffsBy)
+    if (barangMiss.length > 0) {
+      let konstan = 0, kacau = 0, kacauUrut = 0, konstanUrut = 0
+      barangMiss.forEach(function(idB) {
+        const varian = Object.keys(diffsBy[idB]).length === 1
+        if (varian) { konstan++; if (unsortedBy[idB]) konstanUrut++ }
+        else        { kacau++;   if (unsortedBy[idB]) kacauUrut++ }
+      })
+      // "konstan": semua baris salah barang itu meleset sama besar → tanda
+      //   saldo tergeser (koreksi lama tidak dikaskadekan / edit manual).
+      // "bervariasi": meleset berbeda-beda → tanda urutan input ≠ urutan tanggal.
+      Logger.log("[DIAG] " + type + ": " + barangMiss.length + " barang kolom I-nya berbeda. " +
+        "Geser konstan=" + konstan + " (urutan sheet ≠ tanggal: " + konstanUrut + "), " +
+        "bervariasi=" + kacau + " (urutan sheet ≠ tanggal: " + kacauUrut + ")")
+    }
+    sampleEvenly(missI, 5).forEach(function(m) {
+      Logger.log("[DIAG] " + type + " I " + m.kind + " baris " + m.row + " " + m.idTx + " barang=" + m.idB +
+        " tgl=" + fmtDay(m.dk) + " sekarang=" + m.now + " seharusnya=" + m.want + " (selisih " + (m.now - m.want) + ")")
+    })
+    sampleEvenly(missF, 5).forEach(function(m) {
+      // drift = F - (G - transaksi bulan ini). Bukan 0 berarti G, F, dan transaksi
+      // bulan ini TIDAK saling cocok — periksa barang ini sebelum percaya pada G.
+      Logger.log("[DIAG] " + type + " F barang=" + m.idB + " F=" + m.f + " G=" + m.g +
+        " F-seharusnya=" + m.want + " (drift " + (m.f - m.want) + ")")
+    })
+
+    if (apply) {
+      if (fixI.masuk  > 0) getMasukSheet(type).getRange(2, 9, outI.masuk.length, 1).setValues(outI.masuk)
+      if (fixI.keluar > 0) getKeluarSheet(type).getRange(2, 9, outI.keluar.length, 1).setValues(outI.keluar)
+      clearBarangCache(type)
+    }
+  })
+
+  Logger.log("[REBUILD] snapshot selisih=" + snapFix + (apply ? " — diperbaiki" : " (dry run)"))
+
+  // Sebaran per bulan: selisih menumpuk di bulan-bulan terbaru → tanda transaksi
+  // mundur diinput setelah rollover; tersebar merata → koreksi lama tak dikaskadekan.
+  const perBulan = {}
+  snapMiss.forEach(function(m) { perBulan[m.ym] = (perBulan[m.ym] || 0) + 1 })
+  Object.keys(perBulan).sort().forEach(function(ym) {
+    Logger.log("[DIAG] snapshot bulan " + ym + ": " + perBulan[ym] + " selisih")
+  })
+  sampleEvenly(snapMiss, 5).forEach(function(m) {
+    Logger.log("[DIAG] snapshot " + m.type + " " + m.ym + " barang=" + m.idB +
+      " sekarang=" + m.now + " seharusnya=" + m.want + " (selisih " + (m.now - m.want) + ")")
+  })
+
+  if (apply) {
+    if (snapFix > 0) SHEETS.snapshot.getRange(2, 5, snapCol.length, 1).setValues(snapCol)
+    SpreadsheetApp.flush()
+    resetMemo()
+    bumpStokGenAll()
+  }
+  report.snapshot = snapFix
+  report.perBulan = perBulan
+  return report
+}
+
+// ── Modul Gudang (v3.6) ──────────────────────────────────────────────────────
+//
+// Dipanggil dari halaman /gudang lewat server Next.js (/api/gudang/[aksi]).
+// Setiap action menolak payload tanpa gudangSecret yang cocok dengan Script
+// Property GUDANG_SECRET. Secret hanya ada di server, tidak pernah di browser,
+// sehingga action ini tidak bisa dipanggil langsung meski URL /exec diketahui.
+//
+// Kartu Stok memakai model yang sama dengan rebuildSaldo: saldo satu barang
+// sepenuhnya ditentukan oleh saldo pembuka + transaksi. Bedanya, patokannya
+// saldo pembuka (dipilih petugas), bukan kolom G.
+
+const GUDANG_WRITE = [
+  "gudangSimpanKartu", "gudangIsiSnapshot", "gudangRebuild",
+  "gudangIdKembar", "gudangRollover", "gudangBersihkanCache",
+]
+const GUDANG_LOG_SHEET = "Log Gudang"
+const EPS    = 1e-9
+const TGL_RE = /^\d{4}-\d{2}-\d{2}$/
+
+function rnd(x) { return Math.round(x * 1000) / 1000 }
+
+function ymNext(ym) { const m = ym % 100; return m === 12 ? (Math.floor(ym / 100) + 1) * 100 + 1 : ym + 1 }
+function ymLabel(ym) { return Math.floor(ym / 100) + "-" + String(ym % 100).padStart(2, "0") }
+
+function handleGudang(data) {
+  const secret = PropertiesService.getScriptProperties().getProperty("GUDANG_SECRET")
+  if (!secret || String(data.gudangSecret || "") !== secret) {
+    Logger.log("[WARN] gudang: secret tidak cocok untuk action " + data.action)
+    return errorResponse("unauthorized", 401)
+  }
+
+  const action = data.action
+  try {
+    switch (action) {
+      case "gudangAnomali":        return jsonResponse({ status: "success", data: gudangAnomali() })
+      case "gudangKartu":          return gudangKartuResponse(data)
+      case "gudangSnapshotStatus": return jsonResponse({ status: "success", data: gudangSnapshotStatus() })
+      case "gudangLog":            return jsonResponse({ status: "success", data: gudangLogRows(Number(data.limit) || 200) })
+    }
+    if (GUDANG_WRITE.indexOf(action) === -1) return errorResponse("unknown action: " + action)
+
+    const lock = LockService.getScriptLock()
+    try {
+      lock.waitLock(30000)
+    } catch (err) {
+      return errorResponse("Server sedang sibuk. Coba lagi sebentar lagi.", 503)
+    }
+    try {
+      markScriptWrite()
+      switch (action) {
+        case "gudangSimpanKartu":    return gudangSimpanKartu(data)
+        case "gudangIsiSnapshot":    return gudangIsiSnapshot(data)
+        case "gudangRebuild":        return gudangRebuild(data)
+        case "gudangIdKembar":       return gudangIdKembar(data)
+        case "gudangRollover":       return gudangRollover(data)
+        case "gudangBersihkanCache": return gudangBersihkanCache()
+      }
+    } finally {
+      SpreadsheetApp.flush()
+      lock.releaseLock()
+    }
+  } catch (err) {
+    // Hanya petugas gudang yang terautentikasi sampai di sini, jadi pesan aslinya
+    // boleh diteruskan — membantu diagnosa tanpa harus membuka log eksekusi.
+    Logger.log("[ERROR] " + action + ": " + err.message + "\n" + err.stack)
+    return errorResponse("Gagal memproses " + action + ": " + err.message, 500)
+  }
+}
+
+// ── Log Gudang ──
+
+function ensureGudangLogSheet() {
+  let sheet = SS.getSheetByName(GUDANG_LOG_SHEET)
+  if (!sheet) {
+    sheet = SS.insertSheet(GUDANG_LOG_SHEET)
+    sheet.appendRow(["waktu", "petugas", "aksi", "type", "id_barang", "nama_barang", "ringkasan", "alasan", "detail"])
+  }
+  return sheet
+}
+
+function tulisLogGudang(data, aksi, info) {
+  try {
+    ensureGudangLogSheet().appendRow([
+      new Date(), String(data.petugas || "-"), aksi,
+      info.type || "", info.id_barang || "", info.nama || "",
+      info.ringkasan || "", String(data.alasan || ""),
+      info.detail ? JSON.stringify(info.detail).slice(0, 45000) : "",
+    ])
+  } catch (e) {
+    Logger.log("[WARN] Gagal menulis Log Gudang: " + e.message)
+  }
+}
+
+function gudangLogRows(limit) {
+  const sheet = SS.getSheetByName(GUDANG_LOG_SHEET)
+  if (!sheet) return []
+  const last = sheet.getLastRow()
+  if (last < 2) return []
+  const n  = Math.min(limit, last - 1)
+  const tz = Session.getScriptTimeZone()
+  return sheet.getRange(last - n + 1, 1, n, 8).getValues().reverse().map(function(r) {
+    return {
+      waktu:       r[0] instanceof Date ? Utilities.formatDate(r[0], tz, "yyyy-MM-dd HH:mm") : String(r[0]),
+      petugas:     String(r[1]),
+      aksi:        String(r[2]),
+      type:        String(r[3]),
+      id_barang:   String(r[4]),
+      nama_barang: String(r[5]),
+      ringkasan:   String(r[6]),
+      alasan:      String(r[7]),
+    }
+  })
+}
+
+// ── Anomali (cekKontinuitas + selisih snapshot, sebagai JSON) ──
+
+/** id yang muncul lebih dari sekali di satu sheet transaksi. */
+function idKembarSet(rows) {
+  const seen = {}, dup = {}
+  rows.forEach(function(r) {
+    const id = String(r[0]).trim()
+    if (!id) return
+    if (seen[id]) dup[id] = true
+    seen[id] = true
+  })
+  return dup
+}
+
+function gudangAnomali() {
+  const nowYm = currentYm()
+  const items = []
+  let total = 0
+
+  const snapBy = {}   // "type|id_barang" → [{ ym, val }]
+  snapshotRowsAll().forEach(function(r) {
+    const k = String(r[2]) + "|" + String(r[3]).trim()
+    if (!snapBy[k]) snapBy[k] = []
+    snapBy[k].push({ ym: Number(r[0]) * 100 + Number(r[1]), val: Number(r[4]) || 0 })
+  })
+
+  VALID_TYPES.forEach(function(type) {
+    const bRows  = readRows(getBarangSheet(type))
+    const rowsBy = { masuk: masukRowsOf(type), keluar: keluarRowsOf(type) }
+    const ledger = buildLedgers(rowsBy, null)
+    const dup    = { masuk: idKembarSet(rowsBy.masuk), keluar: idKembarSet(rowsBy.keluar) }
+    function txId(e) { return String(rowsBy[e.kind][e.rowIndex - 2][0]).trim() }
+
+    bRows.forEach(function(b) {
+      const idB = String(b[0]).trim()
+      if (!idB) return
+      total++
+      const led = ledger[idB] || []
+      const F   = Number(b[5]) || 0
+      const G   = Number(b[6]) || 0
+
+      // Patahan rantai kolom I, dipasangkan seperti cekKontinuitas.
+      const jumps = []
+      for (let i = 1; i < led.length; i++) {
+        const j = (led[i].saldo - led[i - 1].saldo) - led[i].eff
+        if (Math.abs(j) > EPS) jumps.push({ i: i, size: j })
+      }
+      let iso = 0, lonc = 0, k = 0
+      while (k < jumps.length) {
+        const a = jumps[k], nx = jumps[k + 1]
+        if (nx && nx.i === a.i + 1 && Math.abs(a.size + nx.size) < EPS) { iso++; k += 2 }
+        else { lonc++; k++ }
+      }
+
+      const ujung = led.length ? G - led[led.length - 1].saldo : 0
+      let netNow = 0
+      led.forEach(function(e) { if (Math.floor(e.pos[0] / 100) >= nowYm) netNow += e.eff })
+      const fDrift = F - (G - netNow)
+
+      // Snapshot dibandingkan dengan hitungan berpatokan G, sama seperti rebuildSaldo.
+      let snapBad = 0
+      ;(snapBy[type + "|" + idB] || []).forEach(function(s) {
+        let want = G
+        led.forEach(function(e) { if (Math.floor(e.pos[0] / 100) >= s.ym) want -= e.eff })
+        if (Math.abs(s.val - want) > EPS) snapBad++
+      })
+
+      const minus  = led.some(function(e) { return e.saldo < -EPS })
+      const kembar = led.some(function(e) { return dup[e.kind][txId(e)] === true })
+
+      if (lonc || iso || Math.abs(ujung) > EPS || Math.abs(fDrift) > EPS || snapBad || minus || kembar) {
+        items.push({
+          type: type, id_barang: idB,
+          kode_barang: String(b[1]), nama_barang: String(b[2]), merk: String(b[3]), satuan: String(b[4]),
+          transaksi: led.length, loncatan: lonc, terisolasi: iso,
+          ujung: rnd(ujung), fDrift: rnd(fDrift), snapshot: snapBad, minus: minus, kembar: kembar,
+        })
+      }
+    })
+  })
+
+  return { items: items, totalBarang: total, nowYm: nowYm }
+}
+
+// ── Kartu Stok ──
+
+/**
+ * Seluruh riwayat satu barang, urut seperti ledger. rowIndex disertakan untuk
+ * dipakai gudangSimpanKartu dan dibuang sebelum dikirim ke browser.
+ */
+function kartuData(type, idB) {
+  const bRows = readRows(getBarangSheet(type))
+  let bi = -1
+  for (let i = 0; i < bRows.length; i++) {
+    if (String(bRows[i][0]).trim() === idB) { bi = i; break }
+  }
+  if (bi < 0) return null
+  const b = bRows[bi]
+
+  const rowsBy = { masuk: readRows(getMasukSheet(type)), keluar: readRows(getKeluarSheet(type)) }
+  const only   = {}
+  only[idB] = true
+  const led = buildLedgers(rowsBy, only)[idB] || []
+  const dup = { masuk: idKembarSet(rowsBy.masuk), keluar: idKembarSet(rowsBy.keluar) }
+
+  const tx = led.map(function(e) {
+    const r  = rowsBy[e.kind][e.rowIndex - 2]
+    const id = String(r[0]).trim()
+    return {
+      kind: e.kind, id: id, tanggal: fmtDay(e.pos[0]),
+      qty: Number(r[7]) || 0, saldo: Number(r[8]) || 0, keterangan: String(r[9] || ""),
+      kembar: dup[e.kind][id] === true, rowIndex: e.rowIndex,
+    }
+  })
+
+  const snapshot = []
+  if (SHEETS.snapshot) {
+    readRows(SHEETS.snapshot).forEach(function(r, i) {
+      if (String(r[2]) === type && String(r[3]).trim() === idB) {
+        snapshot.push({ ym: Number(r[0]) * 100 + Number(r[1]), saldo: Number(r[4]) || 0, rowIndex: i + 2 })
+      }
+    })
+  }
+  snapshot.sort(function(a, b) { return a.ym - b.ym })
+
+  const barang = {
+    id: idB, kode_barang: String(b[1]), nama_barang: String(b[2]), merk: String(b[3]), satuan: String(b[4]),
+    saldo_awal: Number(b[5]) || 0, sisa_saldo: Number(b[6]) || 0, rowIndex: bi + 2,
+  }
+  return {
+    barang: barang, tx: tx, snapshot: snapshot, hash: kartuHash(tx, barang),
+    nowYm: currentYm(), today: fmtDay(dayKeyOf(new Date())),
+  }
+}
+
+/** Sidik jari kartu. Berubah jika ada transaksi barang ini yang ditambah/diubah/dihapus. */
+function kartuHash(tx, barang) {
+  const s = tx.map(function(t) { return [t.kind, t.id, t.tanggal, t.qty, t.saldo].join("|") }).join(";") +
+    "#" + barang.saldo_awal + "#" + barang.sisa_saldo
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, s, Utilities.Charset.UTF_8)
+    .map(function(x) { return ((x + 256) % 256).toString(16).padStart(2, "0") })
+    .join("")
+}
+
+function gudangKartuResponse(data) {
+  if (!isValidType(data.type)) return errorResponse("invalid type: " + data.type)
+  const k = kartuData(data.type, String(data.id_barang || "").trim())
+  if (!k) return errorResponse("id_barang tidak ditemukan: " + data.id_barang, 404)
+  delete k.barang.rowIndex
+  k.tx.forEach(function(t) { delete t.rowIndex })
+  k.snapshot.forEach(function(s) { delete s.rowIndex })
+  return jsonResponse({ status: "success", data: k })
+}
+
+/**
+ * Terapkan perubahan Kartu Stok satu barang, lalu tulis ulang semua saldonya.
+ *
+ * Payload: { type, id_barang, baseHash, pembuka, alasan, petugas,
+ *            ops: { update: [{kind,id,tanggal,qty}], delete: [{kind,id}],
+ *                   add: [{kind,tanggal,qty,keterangan}] } }
+ *
+ * Angka saldo dari browser tidak dipakai — semuanya dihitung ulang di sini.
+ * baseHash menolak penyimpanan jika ada yang mengubah barang ini sejak kartunya
+ * dibuka, supaya input orang lain tidak tertimpa diam-diam.
+ */
+function gudangSimpanKartu(data) {
+  const t = _t("gudangSimpanKartu")
+  const type = data.type
+  if (!isValidType(type)) return errorResponse("invalid type: " + type)
+  const idB     = String(data.id_barang || "").trim()
+  const pembuka = Number(data.pembuka)
+  if (data.pembuka === null || data.pembuka === "" || !isFinite(pembuka)) return errorResponse("Saldo pembuka tidak valid.")
+  if (String(data.alasan || "").trim().length < 5) return errorResponse("Alasan perubahan wajib diisi.")
+
+  const cur = kartuData(type, idB)
+  if (!cur) return errorResponse("id_barang tidak ditemukan: " + idB, 404)
+  if (cur.hash !== data.baseHash) {
+    return errorResponse("Data barang ini berubah sejak kartu dibuka. Muat ulang kartu, lalu ulangi perubahan.", 409)
+  }
+
+  const ops   = data.ops || {}
+  const upd   = Array.isArray(ops.update) ? ops.update : []
+  const del   = Array.isArray(ops.delete) ? ops.delete : []
+  const add   = Array.isArray(ops.add)    ? ops.add    : []
+  const today = dayKeyOf(new Date())
+  const byKey = {}
+  cur.tx.forEach(function(x) { byKey[x.kind + "|" + x.id] = x })
+
+  function cekIsi(o, label) {
+    if (o.kind !== "masuk" && o.kind !== "keluar") return label + ": jenis tidak valid"
+    if (!TGL_RE.test(String(o.tanggal)) || dayKeyOf(o.tanggal) === 0) return label + ": tanggal tidak valid"
+    if (dayKeyOf(o.tanggal) > today) return label + ": tanggal tidak boleh setelah hari ini"
+    const q = Number(o.qty)
+    if (!isFinite(q) || q <= 0) return label + ": qty harus lebih dari 0"
+    return null
+  }
+  const dipakai = {}
+  function cekMilik(o, label) {
+    const key = o.kind + "|" + String(o.id)
+    const x = byKey[key]
+    if (!x) return label + ": transaksi " + o.id + " bukan milik barang ini"
+    if (x.kembar) return label + ": " + DUP_ID_MSG + o.id
+    if (dipakai[key]) return label + ": transaksi " + o.id + " muncul dua kali"
+    dipakai[key] = true
+    return null
+  }
+  for (let i = 0; i < upd.length; i++) {
+    const err = cekMilik(upd[i], "ubah[" + i + "]") || cekIsi(upd[i], "ubah[" + i + "]")
+    if (err) return errorResponse(err)
+    if (upd[i].kind !== byKey[upd[i].kind + "|" + upd[i].id].kind) return errorResponse("ubah[" + i + "]: jenis tidak bisa diubah")
+  }
+  for (let i = 0; i < del.length; i++) {
+    const err = cekMilik(del[i], "hapus[" + i + "]")
+    if (err) return errorResponse(err)
+  }
+  for (let i = 0; i < add.length; i++) {
+    const err = cekIsi(add[i], "tambah[" + i + "]")
+    if (err) return errorResponse(err)
+  }
+
+  const sheets = { masuk: getMasukSheet(type), keluar: getKeluarSheet(type) }
+  const b = cur.barang
+
+  // 1. Ubah tanggal/qty (nomor baris belum bergeser).
+  upd.forEach(function(o) {
+    const x = byKey[o.kind + "|" + o.id]
+    sheets[o.kind].getRange(x.rowIndex, 7, 1, 2).setValues([[o.tanggal, Number(o.qty)]])
+    if (o.keterangan !== undefined) sheets[o.kind].getRange(x.rowIndex, 10).setValue(String(o.keterangan))
+  })
+
+  // 2. Tambah di akhir sheet. ID diberikan menurut urutan array — urutan yang
+  //    sama dipakai pratinjau di browser untuk transaksi baru di hari yang sama.
+  const idBaru = []
+  ;["masuk", "keluar"].forEach(function(kind) {
+    const items = add.filter(function(o) { return o.kind === kind })
+    if (items.length === 0) return
+    const ids = reserveIds(sheets[kind], kind === "masuk" ? "CR" : "DB", type, items.length)
+    batchInsertRows(sheets[kind], items.map(function(o, i) {
+      idBaru.push(ids[i])
+      return [ids[i], idB, b.kode_barang, b.nama_barang, b.merk, b.satuan, o.tanggal, Number(o.qty), 0, String(o.keterangan || "")]
+    }))
+  })
+
+  // 3. Hapus dari baris paling bawah supaya nomor baris di atasnya tetap benar.
+  ;["masuk", "keluar"].forEach(function(kind) {
+    del.filter(function(o) { return o.kind === kind })
+      .map(function(o) { return byKey[kind + "|" + o.id].rowIndex })
+      .sort(function(a, c) { return c - a })
+      .forEach(function(row) { sheets[kind].deleteRow(row) })
+  })
+
+  // 4. Tulis ulang kolom I, snapshot, F, G.
+  const hasil = tulisUlangSaldoBarang(type, idB, pembuka, b.rowIndex)
+  clearBarangCache(type)
+  resetMemo()
+  bumpStokGenAll()
+
+  const first = cur.tx[0]
+  const pembukaLama = first ? first.saldo - effectOf(first.kind, first.qty) : b.sisa_saldo
+  const ringkas = []
+  if (Math.abs(pembukaLama - pembuka) > EPS) ringkas.push("pembuka " + pembukaLama + " → " + pembuka)
+  if (upd.length) ringkas.push(upd.length + " diubah")
+  if (add.length) ringkas.push(add.length + " ditambah")
+  if (del.length) ringkas.push(del.length + " dihapus")
+  ringkas.push(hasil.iBerubah + " saldo transaksi ditulis ulang")
+  if (hasil.snapshotBerubah) ringkas.push(hasil.snapshotBerubah + " snapshot")
+  if (Math.abs(hasil.Glama - hasil.G) > EPS) ringkas.push("G " + hasil.Glama + " → " + hasil.G)
+  hasil.idBaru = idBaru
+
+  tulisLogGudang(data, "Simpan kartu stok", {
+    type: type, id_barang: idB, nama: b.nama_barang, ringkasan: ringkas.join(" · "),
+    detail: { pembukaLama: pembukaLama, pembuka: pembuka, ops: ops, idBaru: idBaru, hasil: hasil },
+  })
+
+  _te(t)
+  return jsonResponse({ status: "success", data: hasil })
+}
+
+/**
+ * Hitung ulang semua saldo turunan satu barang dari saldo pembuka:
+ * kolom I tiap transaksi, Snapshot Saldo yang sudah ada, serta kolom F dan G.
+ */
+function tulisUlangSaldoBarang(type, idB, pembuka, barangRow) {
+  const rowsBy = { masuk: readRows(getMasukSheet(type)), keluar: readRows(getKeluarSheet(type)) }
+  const only   = {}
+  only[idB] = true
+  const led   = buildLedgers(rowsBy, only)[idB] || []
+  const nowYm = currentYm()
+
+  function openAt(ym) {
+    let v = pembuka
+    led.forEach(function(e) { if (Math.floor(e.pos[0] / 100) < ym) v += e.eff })
+    return v
+  }
+
+  // 1. Kolom I
+  const edits = { masuk: {}, keluar: {} }
+  let s = pembuka, iBerubah = 0
+  led.forEach(function(e) {
+    s += e.eff
+    if (Math.abs(e.saldo - s) > EPS) { edits[e.kind][e.rowIndex] = s; iBerubah++ }
+  })
+  const G = s
+  ;["masuk", "keluar"].forEach(function(kind) {
+    const idxs = Object.keys(edits[kind]).map(Number)
+    if (idxs.length === 0) return
+    const lo = Math.min.apply(null, idxs)
+    const hi = Math.max.apply(null, idxs)
+    const col = []
+    for (let r = lo; r <= hi; r++) {
+      col.push([edits[kind][r] !== undefined ? edits[kind][r] : rowsBy[kind][r - 2][8]])
+    }
+    const sheet = kind === "masuk" ? getMasukSheet(type) : getKeluarSheet(type)
+    sheet.getRange(lo, 9, col.length, 1).setValues(col)
+  })
+
+  // 2. Snapshot Saldo — hanya baris yang sudah ada.
+  let snapshotBerubah = 0
+  if (SHEETS.snapshot) {
+    const snapRows = readRows(SHEETS.snapshot)
+    const colE = snapRows.map(function(r) {
+      if (String(r[2]) === type && String(r[3]).trim() === idB) {
+        const want = openAt(Number(r[0]) * 100 + Number(r[1]))
+        if (Math.abs((Number(r[4]) || 0) - want) > EPS) { snapshotBerubah++; return [want] }
+      }
+      return [r[4]]
+    })
+    if (snapshotBerubah > 0) SHEETS.snapshot.getRange(2, 5, colE.length, 1).setValues(colE)
+  }
+
+  // 3. Master F (saldo awal bulan berjalan) dan G (sisa saldo)
+  const bSheet = getBarangSheet(type)
+  const lama   = bSheet.getRange(barangRow, 6, 1, 2).getValues()[0]
+  const F      = openAt(nowYm)
+  bSheet.getRange(barangRow, 6, 1, 2).setValues([[F, G]])
+
+  return {
+    iBerubah: iBerubah, snapshotBerubah: snapshotBerubah,
+    F: F, G: G, Flama: Number(lama[0]) || 0, Glama: Number(lama[1]) || 0,
+  }
+}
+
+// ── Snapshot, pemeliharaan, rollover ──
+
+function gudangSnapshotStatus() {
+  const totals = {}
+  VALID_TYPES.forEach(function(t) {
+    totals[t] = readRows(getBarangSheet(t)).filter(function(r) { return String(r[0]).trim() }).length
+  })
+
+  const counts = {}
+  snapshotRowsAll().forEach(function(r) {
+    const ym = Number(r[0]) * 100 + Number(r[1])
+    if (!counts[ym]) counts[ym] = { atk: 0, rt: 0, obat: 0 }
+    const t = String(r[2])
+    if (counts[ym][t] !== undefined) counts[ym][t]++
+  })
+
+  const nowYm = currentYm()
+  const yms   = Object.keys(counts).map(Number).filter(function(ym) { return ym < nowYm })
+  const months = []
+  if (yms.length > 0) {
+    for (let ym = Math.min.apply(null, yms); ym < nowYm; ym = ymNext(ym)) {
+      const c = counts[ym] || { atk: 0, rt: 0, obat: 0 }
+      months.push({ ym: ym, atk: c.atk, rt: c.rt, obat: c.obat })
+    }
+  }
+  months.reverse()
+  return { months: months, totals: totals, nowYm: nowYm }
+}
+
+function gudangIsiSnapshot(data) {
+  const ym = Number(data.ym)
+  const y  = Math.floor(ym / 100), m = ym % 100
+  if (!y || m < 1 || m > 12) return errorResponse("Bulan tidak valid.")
+  if (ym >= currentYm()) return errorResponse("Snapshot bulan berjalan dibuat oleh rollover tanggal 1 bulan depan.")
+
+  const n = fillSnapshotMonths([{ year: y, month: m }])[ym]
+  if (n === null || n === undefined) {
+    return errorResponse("Tidak ada snapshot sebelumnya (maks. 24 bulan ke belakang) yang bisa dijadikan acuan.")
+  }
+  tulisLogGudang(data, "Isi snapshot", { ringkasan: "Snapshot " + ymLabel(ym) + ": " + n + " baris ditambahkan" })
+  return jsonResponse({ status: "success", data: { ym: ym, ditambah: n } })
+}
+
+function gudangRebuild(data) {
+  const apply  = data.apply === true
+  const report = rebuildSaldoCore(apply)
+  if (apply) {
+    VALID_TYPES.forEach(function(type) { clearBarangCache(type) })
+    tulisLogGudang(data, "Hitung ulang semua saldo", { ringkasan: "Patokan G", detail: report })
+  }
+  return jsonResponse({ status: "success", data: report })
+}
+
+function gudangIdKembar(data) {
+  const apply  = data.apply === true
+  const report = repairDuplicateIdsCore(apply)
+  if (apply && report.transaksi.length > 0) {
+    tulisLogGudang(data, "Perbaiki ID kembar", {
+      ringkasan: report.transaksi.map(function(x) { return x.sheet + ": " + x.baris.length }).join(", "),
+      detail: report,
+    })
+  }
+  return jsonResponse({ status: "success", data: report })
+}
+
+/**
+ * Rollover manual, hanya untuk bulan yang rollover otomatisnya gagal. Penanda
+ * "sudah jalan" adalah snapshot bulan lalu: rolloverCore menyimpannya lebih dulu.
+ * Menjalankan ulang di tengah bulan akan menyalin G ke F dan merusak saldo awal.
+ */
+function gudangRollover(data) {
+  const now  = new Date()
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  const ym   = prev.getFullYear() * 100 + prev.getMonth() + 1
+  if (Object.keys(buildSnapshotMap(prev.getFullYear(), prev.getMonth() + 1)).length > 0) {
+    return errorResponse("Snapshot " + ymLabel(ym) + " sudah ada, berarti rollover bulan ini sudah jalan.", 409)
+  }
+  const r = rolloverCore()
+  bumpStokGenAll()
+  tulisLogGudang(data, "Rollover manual", { ringkasan: "Snapshot " + ymLabel(ym) + " dibuat, F = G" })
+  return jsonResponse({ status: "success", data: r })
+}
+
+function gudangBersihkanCache() {
+  VALID_TYPES.forEach(function(type) { clearBarangCache(type) })
+  bumpStokGenAll()
+  return jsonResponse({ status: "success" })
 }
 
 // ── Lightweight Performance Logger ───────────────────────────────────────────
@@ -867,6 +2069,9 @@ function doPost(e) {
       return jsonResponse({ status: ok ? "success" : "unauthorized" })
     }
 
+    // Menu Gudang: diperiksa dengan GUDANG_SECRET dan mengambil lock sendiri.
+    if (typeof action === "string" && action.indexOf("gudang") === 0) return handleGudang(data)
+
     if (!action || VALID_ACTIONS_POST.indexOf(action) === -1) {
       return errorResponse("unknown action: " + action)
     }
@@ -943,6 +2148,10 @@ function doPost(e) {
 
       return res
     } finally {
+      // Paksa semua tulisan tertunda masuk ke sheet SEBELUM lock dilepas. Tanpa
+      // ini request berikutnya bisa mulai saat baris terakhir belum terlihat,
+      // lalu membaca getLastRow()/saldo yang basi.
+      SpreadsheetApp.flush()
       lock.releaseLock()
     }
 
@@ -991,8 +2200,16 @@ function handleAdd(type, sheet, data) {
     data.merk, data.satuan, data.tanggal, qty,
     sisaSaldo, data.keterangan || "",
   ])
+  const newRow = sheet.getLastRow()
 
   getBarangSheet(type).getRange(entry.rowIndex, 7).setValue(sisaSaldo)
+
+  // Tanggal bisa mundur: saldo baris ini dijangkar ke posisinya, dan transaksi
+  // yang lebih baru ikut bergeser.
+  cascadeSaldo(type, String(data.id_barang), [], [{
+    kind: "keluar", rowIndex: newRow,
+    pos: makePos("keluar", data.tanggal, id), eff: effectOf("keluar", qty),
+  }], sisaSaldo)
   clearBarangCache(type)
 
   _te(t)
@@ -1010,14 +2227,12 @@ function handleAddBatch(type, sheet, data) {
   const barangMap  = buildBarangMap(barangRows)
   const runSaldo   = {}
   const newRows    = []
-  let   nextRowNum = sheet.getLastRow() + 1
 
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
     const err  = validateFields(item, ["id_barang", "kode_barang", "nama_barang", "merk", "satuan", "tanggal", "qty"])
     if (err) return errorResponse("item[" + i + "]: " + err)
 
-    const id  = "DB-" + TYPE_LABEL[type] + "-" + String(nextRowNum - 1).padStart(4, "0")
     const idB = String(item.id_barang)
     const qty = Number(item.qty)
 
@@ -1029,13 +2244,17 @@ function handleAddBatch(type, sheet, data) {
     runSaldo[idB] -= qty
 
     newRows.push([
-      id, item.id_barang, item.kode_barang, item.nama_barang,
+      null, item.id_barang, item.kode_barang, item.nama_barang,
       item.merk, item.satuan, item.tanggal, qty,
       runSaldo[idB], item.keterangan || "",
     ])
-    nextRowNum++
   }
 
+  // ID dicadangkan setelah validasi lolos, supaya penolakan tidak membuang nomor.
+  const ids = reserveIds(sheet, "DB", type, newRows.length)
+  newRows.forEach(function(row, i) { row[0] = ids[i] })
+
+  const firstRow = sheet.getLastRow() + 1
   batchInsertRows(sheet, newRows)
 
   const barangSheet = getBarangSheet(type)
@@ -1043,6 +2262,18 @@ function handleAddBatch(type, sheet, data) {
     const entry = barangMap[idB]
     if (entry) barangSheet.getRange(entry.rowIndex, 7).setValue(runSaldo[idB])
   })
+
+  // Item dengan tanggal mundur menggeser saldo transaksi yang lebih baru.
+  const changes = {}
+  newRows.forEach(function(row, i) {
+    const idB = String(row[1])
+    if (!changes[idB]) changes[idB] = { removed: [], added: [], saldoAkhir: runSaldo[idB] }
+    changes[idB].added.push({
+      kind: "keluar", rowIndex: firstRow + i,
+      pos: makePos("keluar", row[6], row[0]), eff: effectOf("keluar", row[7]),
+    })
+  })
+  cascadeSaldoMulti(type, changes)
   clearBarangCache(type)
 
   _te(t)
@@ -1059,6 +2290,7 @@ function handleUpdate(type, sheet, data) {
   const keluarMap  = buildTransaksiMap(keluarRows)
   const kEntry     = keluarMap[String(data.id)]
   if (!kEntry) return errorResponse("id keluar tidak ditemukan: " + data.id)
+  if (kEntry.duplicate) return errorResponse(DUP_ID_MSG + data.id)
 
   const oldIdBarang = kEntry.id_barang
   const oldQty      = kEntry.qty
@@ -1088,6 +2320,20 @@ function handleUpdate(type, sheet, data) {
     if (oldEntry) barangSheet.getRange(oldEntry.rowIndex, 7).setValue(oldEntry.sisa_saldo + oldQty)
   }
 
+  // Koreksi qty/tanggal/barang pada transaksi lama: geser saldo semua transaksi
+  // sesudahnya (kolom I), Snapshot Saldo, dan kolom F — bukan cuma baris ini.
+  const oldTx = { pos: makePos("keluar", kEntry.tanggal, data.id), eff: effectOf("keluar", oldQty) }
+  const newTx = {
+    kind: "keluar", rowIndex: kEntry.rowIndex,
+    pos: makePos("keluar", data.tanggal, data.id), eff: effectOf("keluar", newQty),
+  }
+  if (sameBarang) {
+    cascadeSaldo(type, newIdBarang, [oldTx], [newTx], newSaldo)
+  } else {
+    cascadeSaldo(type, oldIdBarang, [oldTx], [], 0)
+    cascadeSaldo(type, newIdBarang, [], [newTx], newSaldo)
+  }
+
   clearBarangCache(type)
   _te(t)
   return jsonResponse({ status: "success" })
@@ -1102,6 +2348,7 @@ function handleDelete(type, sheet, data) {
   const keluarMap  = buildTransaksiMap(keluarRows)
   const kEntry     = keluarMap[String(data.id)]
   if (!kEntry) return errorResponse("id keluar tidak ditemukan: " + data.id)
+  if (kEntry.duplicate) return errorResponse(DUP_ID_MSG + data.id)
 
   sheet.deleteRow(kEntry.rowIndex)
 
@@ -1110,6 +2357,9 @@ function handleDelete(type, sheet, data) {
   const bEntry     = barangMap[kEntry.id_barang]
   if (bEntry) {
     getBarangSheet(type).getRange(bEntry.rowIndex, 7).setValue(bEntry.sisa_saldo + kEntry.qty)
+    cascadeSaldo(type, kEntry.id_barang, [{
+      pos: makePos("keluar", kEntry.tanggal, data.id), eff: effectOf("keluar", kEntry.qty),
+    }], [], 0)
     clearBarangCache(type)
   }
 
@@ -1139,8 +2389,14 @@ function handleAddMasuk(type, sheet, data) {
     data.merk, data.satuan, data.tanggal, qty,
     sisaSaldo, data.keterangan || "",
   ])
+  const newRow = sheet.getLastRow()
 
   getBarangSheet(type).getRange(entry.rowIndex, 7).setValue(sisaSaldo)
+
+  cascadeSaldo(type, String(data.id_barang), [], [{
+    kind: "masuk", rowIndex: newRow,
+    pos: makePos("masuk", data.tanggal, id), eff: effectOf("masuk", qty),
+  }], sisaSaldo)
   clearBarangCache(type)
 
   _te(t)
@@ -1158,14 +2414,12 @@ function handleAddMasukBatch(type, sheet, data) {
   const barangMap  = buildBarangMap(barangRows)
   const runSaldo   = {}
   const newRows    = []
-  let   nextRowNum = sheet.getLastRow() + 1
 
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
     const err  = validateFields(item, ["id_barang", "kode_barang", "nama_barang", "merk", "satuan", "tanggal", "qty"])
     if (err) return errorResponse("item[" + i + "]: " + err)
 
-    const id  = "CR-" + TYPE_LABEL[type] + "-" + String(nextRowNum - 1).padStart(4, "0")
     const idB = String(item.id_barang)
     const qty = Number(item.qty)
 
@@ -1177,13 +2431,16 @@ function handleAddMasukBatch(type, sheet, data) {
     runSaldo[idB] += qty
 
     newRows.push([
-      id, item.id_barang, item.kode_barang, item.nama_barang,
+      null, item.id_barang, item.kode_barang, item.nama_barang,
       item.merk, item.satuan, item.tanggal, qty,
       runSaldo[idB], item.keterangan || "",
     ])
-    nextRowNum++
   }
 
+  const ids = reserveIds(sheet, "CR", type, newRows.length)
+  newRows.forEach(function(row, i) { row[0] = ids[i] })
+
+  const firstRow = sheet.getLastRow() + 1
   batchInsertRows(sheet, newRows)
 
   const barangSheet = getBarangSheet(type)
@@ -1191,6 +2448,17 @@ function handleAddMasukBatch(type, sheet, data) {
     const entry = barangMap[idB]
     if (entry) barangSheet.getRange(entry.rowIndex, 7).setValue(runSaldo[idB])
   })
+
+  const changes = {}
+  newRows.forEach(function(row, i) {
+    const idB = String(row[1])
+    if (!changes[idB]) changes[idB] = { removed: [], added: [], saldoAkhir: runSaldo[idB] }
+    changes[idB].added.push({
+      kind: "masuk", rowIndex: firstRow + i,
+      pos: makePos("masuk", row[6], row[0]), eff: effectOf("masuk", row[7]),
+    })
+  })
+  cascadeSaldoMulti(type, changes)
   clearBarangCache(type)
 
   _te(t)
@@ -1207,6 +2475,7 @@ function handleUpdateMasuk(type, sheet, data) {
   const masukMap   = buildTransaksiMap(masukRows)
   const kEntry     = masukMap[String(data.id)]
   if (!kEntry) return errorResponse("id masuk tidak ditemukan: " + data.id)
+  if (kEntry.duplicate) return errorResponse(DUP_ID_MSG + data.id)
 
   const oldIdBarang = kEntry.id_barang
   const oldQty      = kEntry.qty
@@ -1236,6 +2505,18 @@ function handleUpdateMasuk(type, sheet, data) {
     if (oldEntry) barangSheet.getRange(oldEntry.rowIndex, 7).setValue(oldEntry.sisa_saldo - oldQty)
   }
 
+  const oldTx = { pos: makePos("masuk", kEntry.tanggal, data.id), eff: effectOf("masuk", oldQty) }
+  const newTx = {
+    kind: "masuk", rowIndex: kEntry.rowIndex,
+    pos: makePos("masuk", data.tanggal, data.id), eff: effectOf("masuk", newQty),
+  }
+  if (sameBarang) {
+    cascadeSaldo(type, newIdBarang, [oldTx], [newTx], newSaldo)
+  } else {
+    cascadeSaldo(type, oldIdBarang, [oldTx], [], 0)
+    cascadeSaldo(type, newIdBarang, [], [newTx], newSaldo)
+  }
+
   clearBarangCache(type)
   _te(t)
   return jsonResponse({ status: "success" })
@@ -1250,6 +2531,7 @@ function handleDeleteMasuk(type, sheet, data) {
   const masukMap  = buildTransaksiMap(masukRows)
   const kEntry    = masukMap[String(data.id)]
   if (!kEntry) return errorResponse("id masuk tidak ditemukan: " + data.id)
+  if (kEntry.duplicate) return errorResponse(DUP_ID_MSG + data.id)
 
   sheet.deleteRow(kEntry.rowIndex)
 
@@ -1258,6 +2540,9 @@ function handleDeleteMasuk(type, sheet, data) {
   const bEntry     = barangMap[kEntry.id_barang]
   if (bEntry) {
     getBarangSheet(type).getRange(bEntry.rowIndex, 7).setValue(bEntry.sisa_saldo - kEntry.qty)
+    cascadeSaldo(type, kEntry.id_barang, [{
+      pos: makePos("masuk", kEntry.tanggal, data.id), eff: effectOf("masuk", kEntry.qty),
+    }], [], 0)
     clearBarangCache(type)
   }
 
@@ -1364,6 +2649,16 @@ function rolloverSaldo(secret) {
     return false
   }
 
+  rolloverCore()
+  return true
+}
+
+/**
+ * Isi rollover tanpa pemeriksaan secret. Pemanggil bertanggung jawab atas
+ * otorisasi (rolloverSaldo: ROLLOVER_SECRET; menu Gudang: GUDANG_SECRET + lock).
+ * @returns {{ snapYear: number, snapMonth: number }}
+ */
+function rolloverCore() {
   const t = _t("rollover")
 
   const now       = new Date()
@@ -1398,7 +2693,7 @@ function rolloverSaldo(secret) {
 
   _te(t)
   Logger.log("[ROLLOVER] Done. Snapshot saved for " + snapYear + "-" + snapMonth)
-  return true
+  return { snapYear: snapYear, snapMonth: snapMonth }
 }
 
 // ── getStok ───────────────────────────────────────────────────────────────────
@@ -1620,11 +2915,20 @@ function fillSnapshotDerived() {
     { year: 2026, month: 5 },   // ← sesuaikan
     { year: 2026, month: 6 },
   ]
+  fillSnapshotMonths(FILL_MONTHS)
+}
 
+/**
+ * Isi snapshot bulan-bulan yang diminta dari snapshot terdekat sebelumnya +
+ * transaksi di antaranya. Baris yang sudah ada tidak ditimpa.
+ * @returns {Object} { "YYYYMM": jumlah baris ditambahkan | null jika tidak ada snapshot acuan }
+ */
+function fillSnapshotMonths(FILL_MONTHS) {
+  const hasil = {}
   const snapshotSheet = SHEETS.snapshot
   if (!snapshotSheet) {
     Logger.log("[ERROR] Sheet 'Snapshot Saldo' tidak ditemukan.")
-    return
+    return hasil
   }
 
   const existingRows = readRows(snapshotSheet)
@@ -1642,6 +2946,7 @@ function fillSnapshotDerived() {
     const prior = findNearestPriorSnapshot(year, month)
     if (!prior) {
       Logger.log("[WARN] Tidak ada prior snapshot untuk " + year + "-" + month + ", skip.")
+      hasil[year * 100 + month] = null
       return
     }
 
@@ -1683,9 +2988,11 @@ function fillSnapshotDerived() {
     } else {
       Logger.log("[FILL] Snapshot " + year + "-" + month + " sudah ada semua, dilewati.")
     }
+    hasil[year * 100 + month] = newRows.length
   })
 
   Logger.log("[FILL] Selesai semua.")
+  return hasil
 }
 
 /**
