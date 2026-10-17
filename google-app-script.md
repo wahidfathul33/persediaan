@@ -1,8 +1,19 @@
 /**
  * ============================================================
  *  INVENTORY MANAGEMENT — Google Apps Script
- *  Production-ready | v3.6
+ *  Production-ready | v3.7
  * ============================================================
+ *
+ *  CHANGELOG v3.7 (MENCEGAH LONCATAN STOK):
+ *  - updateBarang tidak lagi menyimpan saldo apa adanya. sisa_saldo dari payload
+ *    diabaikan; saldo_awal hanya boleh diubah untuk barang yang BELUM punya
+ *    transaksi (F, G, dan snapshotnya ikut disamakan). Barang yang sudah
+ *    bertransaksi ditolak (409) — koreksi stok lewat menu Gudang → Kartu Stok.
+ *    Sebelumnya mengubah G dari master membuat stok berubah tanpa transaksi dan
+ *    transaksi berikutnya loncat ke level baru.
+ *  - Validasi server untuk add/addBatch/update masuk & keluar: qty harus angka > 0 dan tanggal harus YYYY-MM-DD yang valid. Sebelumnya hanya dicek di form;
+ *    qty bukan angka membuat sisa_saldo NaN dan memutus rantai saldo.
+ *  - addBarang menolak saldo_awal yang bukan angka atau negatif.
  *
  *  CHANGELOG v3.6 (MODUL GUDANG):
  *  - Action "gudang*" untuk halaman /gudang di aplikasi web. Hanya dilayani jika
@@ -177,6 +188,34 @@ function validateFields(data, fields) {
       return "missing required field: " + f
     }
   }
+  return null
+}
+
+/** Tanggal "YYYY-MM-DD" yang benar-benar ada di kalender (menolak 2026-02-31). */
+function isValidTanggal(val) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(val))
+  if (!m) return false
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3])
+  const dt = new Date(y, mo - 1, d)
+  return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d
+}
+
+const TX_FIELDS = ["id_barang", "kode_barang", "nama_barang", "merk", "satuan", "tanggal", "qty"]
+
+/**
+ * Validasi isi transaksi masuk/keluar di sisi server (v3.7).
+ *
+ * Form sudah memeriksa hal yang sama, tetapi URL /exec bisa dipanggil langsung.
+ * Qty yang bukan angka membuat sisa_saldo jadi NaN, lalu terbaca 0 di request
+ * berikutnya — rantai saldo putus. Tanggal yang tidak terbaca membuat transaksi
+ * terurut di posisi yang salah dan hilang dari laporan bulanan.
+ */
+function validateTransaksi(data) {
+  const err = validateFields(data, TX_FIELDS)
+  if (err) return err
+  const q = Number(data.qty)
+  if (!isFinite(q) || q <= 0) return "qty harus angka lebih dari 0 (diterima: " + data.qty + ")"
+  if (!isValidTanggal(data.tanggal)) return "tanggal harus berformat YYYY-MM-DD (diterima: " + data.tanggal + ")"
   return null
 }
 
@@ -1415,8 +1454,7 @@ const GUDANG_WRITE = [
   "gudangIdKembar", "gudangRollover", "gudangBersihkanCache",
 ]
 const GUDANG_LOG_SHEET = "Log Gudang"
-const EPS    = 1e-9
-const TGL_RE = /^\d{4}-\d{2}-\d{2}$/
+const EPS = 1e-9
 
 function rnd(x) { return Math.round(x * 1000) / 1000 }
 
@@ -1703,7 +1741,7 @@ function gudangSimpanKartu(data) {
 
   function cekIsi(o, label) {
     if (o.kind !== "masuk" && o.kind !== "keluar") return label + ": jenis tidak valid"
-    if (!TGL_RE.test(String(o.tanggal)) || dayKeyOf(o.tanggal) === 0) return label + ": tanggal tidak valid"
+    if (!isValidTanggal(o.tanggal)) return label + ": tanggal tidak valid"
     if (dayKeyOf(o.tanggal) > today) return label + ": tanggal tidak boleh setelah hari ini"
     const q = Number(o.qty)
     if (!isFinite(q) || q <= 0) return label + ": qty harus lebih dari 0"
@@ -2183,7 +2221,7 @@ function dispatch(action, type, sheet, data) {
 function handleAdd(type, sheet, data) {
   const t = _t("add")
 
-  const err = validateFields(data, ["id_barang", "kode_barang", "nama_barang", "merk", "satuan", "tanggal", "qty"])
+  const err = validateTransaksi(data)
   if (err) return errorResponse(err)
 
   const barangRows = readRows(getBarangSheet(type))
@@ -2230,7 +2268,7 @@ function handleAddBatch(type, sheet, data) {
 
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
-    const err  = validateFields(item, ["id_barang", "kode_barang", "nama_barang", "merk", "satuan", "tanggal", "qty"])
+    const err  = validateTransaksi(item)
     if (err) return errorResponse("item[" + i + "]: " + err)
 
     const idB = String(item.id_barang)
@@ -2283,7 +2321,7 @@ function handleAddBatch(type, sheet, data) {
 function handleUpdate(type, sheet, data) {
   const t = _t("update")
 
-  const err = validateFields(data, ["id", "id_barang", "kode_barang", "nama_barang", "merk", "satuan", "tanggal", "qty"])
+  const err = validateFields(data, ["id"]) || validateTransaksi(data)
   if (err) return errorResponse(err)
 
   const keluarRows = readRows(sheet)
@@ -2372,7 +2410,7 @@ function handleDelete(type, sheet, data) {
 function handleAddMasuk(type, sheet, data) {
   const t = _t("addMasuk")
 
-  const err = validateFields(data, ["id_barang", "kode_barang", "nama_barang", "merk", "satuan", "tanggal", "qty"])
+  const err = validateTransaksi(data)
   if (err) return errorResponse(err)
 
   const barangRows = readRows(getBarangSheet(type))
@@ -2417,7 +2455,7 @@ function handleAddMasukBatch(type, sheet, data) {
 
   for (let i = 0; i < data.items.length; i++) {
     const item = data.items[i]
-    const err  = validateFields(item, ["id_barang", "kode_barang", "nama_barang", "merk", "satuan", "tanggal", "qty"])
+    const err  = validateTransaksi(item)
     if (err) return errorResponse("item[" + i + "]: " + err)
 
     const idB = String(item.id_barang)
@@ -2468,7 +2506,7 @@ function handleAddMasukBatch(type, sheet, data) {
 function handleUpdateMasuk(type, sheet, data) {
   const t = _t("updateMasuk")
 
-  const err = validateFields(data, ["id", "id_barang", "kode_barang", "nama_barang", "merk", "satuan", "tanggal", "qty"])
+  const err = validateFields(data, ["id"]) || validateTransaksi(data)
   if (err) return errorResponse(err)
 
   const masukRows  = readRows(sheet)
@@ -2559,7 +2597,8 @@ function handleAddBarang(type, data) {
   if (err) return errorResponse(err)
 
   const bSheet    = getBarangSheet(type)
-  const saldoAwal = Number(data.saldo_awal) || 0
+  const saldoAwal = Number(data.saldo_awal)
+  if (!isFinite(saldoAwal) || saldoAwal < 0) return errorResponse("saldo_awal harus angka 0 atau lebih")
   const id        = generateId(bSheet, "BR", type)
 
   bSheet.appendRow([
@@ -2578,35 +2617,56 @@ function handleAddBarang(type, data) {
 }
 
 /**
- * Update master barang — MURNI menyimpan apa yang dikirim, tanpa perhitungan.
+ * Update master barang (v3.7).
  *
- * Sebelumnya sisa_saldo dihitung sendiri: delta = saldo_awal baru - lama, lalu
- * sisa_saldo digeser sebesar delta itu. Perilaku itu dihapus karena membuat
- * koreksi master jadi tidak terduga — mengubah saldo_awal ikut menggeser angka
- * yang tidak diminta. Sekarang kedua kolom diisi langsung dari form, sehingga
- * admin melihat persis apa yang akan tersimpan.
+ * Kode, nama, merk, dan satuan disimpan apa adanya. Saldo TIDAK bisa diubah dari
+ * sini untuk barang yang sudah punya transaksi: mengubah sisa_saldo tanpa
+ * transaksi berarti stok berubah tanpa jejak, dan transaksi berikutnya dihitung
+ * dari G yang baru — rantai saldo loncat. Koreksi stok dilakukan lewat menu
+ * Gudang → Kartu Stok, yang mencatatnya sebagai transaksi penyesuaian + log.
+ *
+ * Barang yang belum punya transaksi sama sekali boleh diganti saldo_awal-nya
+ * (salah ketik saat membuat barang); F, G, dan snapshotnya ikut disamakan.
+ * sisa_saldo dari payload selalu diabaikan.
  */
+const SALDO_TERKUNCI_MSG = "Saldo barang ini tidak bisa diubah dari Master Barang karena sudah punya transaksi. " +
+  "Koreksi stok lewat menu Gudang → Kartu Stok."
+
+function barangPunyaTransaksi(type, idB) {
+  return [getMasukSheet(type), getKeluarSheet(type)].some(function(sheet) {
+    const last = sheet ? sheet.getLastRow() : 0
+    if (last < 2) return false
+    // Hanya kolom B (id_barang) yang dibaca.
+    return sheet.getRange(2, 2, last - 1, 1).getValues().some(function(r) { return String(r[0]).trim() === idB })
+  })
+}
+
 function handleUpdateBarang(type, data) {
   const t = _t("updateBarang")
 
-  const err = validateFields(data, ["id", "kode_barang", "nama_barang", "merk", "satuan", "saldo_awal", "sisa_saldo"])
+  const err = validateFields(data, ["id", "kode_barang", "nama_barang", "merk", "satuan"])
   if (err) return errorResponse(err)
 
   const bSheet    = getBarangSheet(type)
-  const bRows     = readRows(bSheet)
-  const barangMap = buildBarangMap(bRows)
-  const entry     = barangMap[String(data.id)]
+  const barangMap = buildBarangMap(readRows(bSheet))
+  const idB       = String(data.id).trim()
+  const entry     = barangMap[idB]
   if (!entry) return errorResponse("id barang tidak ditemukan: " + data.id)
 
-  bSheet.getRange(entry.rowIndex, 1, 1, 7).setValues([[
-    data.id,
+  const adaSaldo = data.saldo_awal !== undefined && data.saldo_awal !== null && String(data.saldo_awal).trim() !== ""
+  const saldoBaru = Number(data.saldo_awal)
+  if (adaSaldo && (!isFinite(saldoBaru) || saldoBaru < 0)) return errorResponse("saldo_awal harus angka 0 atau lebih")
+  const ubahSaldo = adaSaldo && Math.abs(saldoBaru - entry.saldo_awal) > 1e-9
+  if (ubahSaldo && barangPunyaTransaksi(type, idB)) return errorResponse(SALDO_TERKUNCI_MSG, 409)
+
+  bSheet.getRange(entry.rowIndex, 2, 1, 4).setValues([[
     data.kode_barang,
     data.nama_barang,
     data.merk,
     data.satuan,
-    Number(data.saldo_awal) || 0,
-    Number(data.sisa_saldo) || 0,
   ]])
+  // Tanpa transaksi, saldo pembuka = saldo awal = sisa saldo = semua snapshotnya.
+  if (ubahSaldo) tulisUlangSaldoBarang(type, idB, saldoBaru, entry.rowIndex)
   clearBarangCache(type)
 
   _te(t)

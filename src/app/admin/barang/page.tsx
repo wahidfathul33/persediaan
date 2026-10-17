@@ -14,12 +14,12 @@ const TABS: { value: KeluarType; label: string }[] = [
   { value: 'obat', label: 'Obat' },
 ]
 
-// sisa_saldo ikut di form karena update master kini menyimpan apa adanya, tanpa
-// menghitung ulang di server. Saat menambah barang baru field ini disembunyikan:
-// sisa_saldo barang baru selalu sama dengan saldo_awal, jadi meminta keduanya
-// hanya membuka peluang salah isi.
+// sisa_saldo hanya ditampilkan, tidak bisa diubah dari sini. Mengubah stok tanpa
+// transaksi membuat saldo transaksi berikutnya loncat; koreksi stok dilakukan
+// lewat menu Gudang → Kartu Stok. saldo_awal hanya diterima server untuk barang
+// yang belum punya transaksi (salah ketik saat membuat barang).
 type BarangForm = Omit<Barang, 'id'>
-type BarangErrors = Partial<Record<'kode_barang' | 'nama_barang' | 'merk' | 'satuan' | 'saldo_awal' | 'sisa_saldo', string>>
+type BarangErrors = Partial<Record<'kode_barang' | 'nama_barang' | 'merk' | 'satuan' | 'saldo_awal', string>>
 
 function makeForm(): BarangForm {
   return { kode_barang: '', nama_barang: '', merk: '', satuan: '', saldo_awal: 0, sisa_saldo: 0 }
@@ -82,8 +82,7 @@ export default function BarangPage() {
     if (!form.nama_barang.trim()) e.nama_barang = 'Nama barang wajib diisi'
     if (!form.merk.trim()) e.merk = 'Merk wajib diisi'
     if (!form.satuan.trim()) e.satuan = 'Satuan wajib diisi'
-    if (form.saldo_awal < 0) e.saldo_awal = 'Saldo awal tidak boleh negatif'
-    if (editId && form.sisa_saldo < 0) e.sisa_saldo = 'Sisa saldo tidak boleh negatif'
+    if (!Number.isFinite(form.saldo_awal) || form.saldo_awal < 0) e.saldo_awal = 'Saldo awal tidak boleh negatif'
     setFormErrors(e)
     return Object.keys(e).length === 0
   }
@@ -94,8 +93,8 @@ export default function BarangPage() {
     setSaving(true)
     try {
       if (editId) {
-        // Dikirim apa adanya — server tidak lagi menghitung ulang sisa_saldo.
-        await updateBarang(activeTab, { ...form, id: editId })
+        const { kode_barang, nama_barang, merk, satuan, saldo_awal } = form
+        await updateBarang(activeTab, { id: editId, kode_barang, nama_barang, merk, satuan, saldo_awal })
       } else {
         // Barang baru: server menyetel sisa_saldo = saldo_awal.
         const { kode_barang, nama_barang, merk, satuan, saldo_awal } = form
@@ -383,23 +382,23 @@ export default function BarangPage() {
                   className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${formErrors.saldo_awal ? 'border-red-400' : 'border-gray-300'}`}
                 />
                 {formErrors.saldo_awal && <p className="text-red-500 text-xs mt-1">{formErrors.saldo_awal}</p>}
+                {editId && !formErrors.saldo_awal && (
+                  <p className="text-gray-500 text-xs mt-1">Hanya bisa diubah jika barang belum punya transaksi.</p>
+                )}
               </div>
 
-              {/* Hanya saat edit. Untuk barang baru, sisa saldo selalu sama dengan
-                  saldo awal dan diisi server. */}
+              {/* Hanya saat edit, dan hanya untuk dilihat. Untuk barang baru, sisa
+                  saldo selalu sama dengan saldo awal dan diisi server. */}
               {editId && (
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">
-                    Sisa Saldo <span className="text-red-500">*</span>
-                  </label>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Sisa Saldo</label>
                   <input
                     type="number"
-                    min={0}
                     value={form.sisa_saldo}
-                    onChange={(e) => setForm((f) => ({ ...f, sisa_saldo: Number(e.target.value) }))}
-                    className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 ${formErrors.sisa_saldo ? 'border-red-400' : 'border-gray-300'}`}
+                    disabled
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-gray-100 text-gray-500 cursor-not-allowed"
                   />
-                  {formErrors.sisa_saldo && <p className="text-red-500 text-xs mt-1">{formErrors.sisa_saldo}</p>}
+                  <p className="text-gray-500 text-xs mt-1">Koreksi stok lewat menu Gudang → Kartu Stok.</p>
                 </div>
               )}
             </div>
@@ -422,7 +421,7 @@ export default function BarangPage() {
         </Modal>
       )}
 
-      {toast && <Toast message={toast} type="error" onClose={() => setToast('')} />}
+      {toast && <Toast message={toast} type="error" onClose={() => setToast('')} duration={7000} />}
     </div>
   )
 }

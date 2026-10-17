@@ -424,7 +424,12 @@ export async function addBarang(type: KeluarType, payload: Omit<Barang, 'id' | '
   await postJSON({ ...payload, type, action: 'addBarang' })
 }
 
-export async function updateBarang(type: KeluarType, payload: Barang): Promise<void> {
+/**
+ * sisa_saldo tidak dikirim: server mengabaikannya. saldo_awal hanya diterima untuk
+ * barang yang belum punya transaksi — selain itu ditolak dengan pesan yang
+ * mengarahkan ke Kartu Stok di menu Gudang.
+ */
+export async function updateBarang(type: KeluarType, payload: Omit<Barang, 'sisa_saldo'>): Promise<void> {
   await postJSON({ ...payload, type, action: 'updateBarang' })
 }
 
