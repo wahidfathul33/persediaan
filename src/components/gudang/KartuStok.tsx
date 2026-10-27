@@ -6,7 +6,7 @@ import Modal from '@/components/Modal'
 import type { KeluarType } from '@/lib/api'
 import {
   getKartu, simpanKartu, GudangError, TYPE_LABEL,
-  type KartuData, type SimpanKartuPayload,
+  type KartuData, type SimpanKartuPayload, type BarisTerdampak,
 } from '@/lib/gudang'
 import {
   computeLedger, patahanTersimpan, cmpRow, effOf, ymOf, ymLabel, ymShort, nextYm,
@@ -84,6 +84,40 @@ function KindTag({ kind }: { kind: Kind }) {
     : <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-orange-50 text-orange-700">Keluar</span>
 }
 
+/** Transaksi yang saldonya berubah: pratinjau di Tinjau, hasil server sesudah simpan. */
+function TabelTerdampak({ rows }: { rows: BarisTerdampak[] }) {
+  return (
+    <div className="max-h-64 overflow-auto border border-gray-200 rounded-lg bg-white">
+      <table className="w-full text-xs">
+        <thead className="sticky top-0 bg-gray-50 text-gray-500">
+          <tr>
+            <th className="px-2 py-1.5 text-left font-semibold">Tanggal</th>
+            <th className="px-2 py-1.5 text-left font-semibold">Jenis</th>
+            <th className="px-2 py-1.5 text-left font-semibold">No. transaksi</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Qty</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Saldo lama</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Saldo baru</th>
+            <th className="px-2 py-1.5 text-right font-semibold">Selisih</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={`${r.kind}|${r.id}`} className="border-t border-gray-100 text-gray-700">
+              <td className="px-2 py-1 whitespace-nowrap">{fmtTanggal(r.tanggal)}</td>
+              <td className="px-2 py-1"><KindTag kind={r.kind} /></td>
+              <td className="px-2 py-1 font-mono">{r.id}</td>
+              <td className="px-2 py-1 text-right tabular-nums">{fmtAngka(r.qty)}</td>
+              <td className={`px-2 py-1 text-right tabular-nums ${r.saldoLama < 0 ? 'text-red-600' : ''}`}>{fmtAngka(r.saldoLama)}</td>
+              <td className={`px-2 py-1 text-right tabular-nums font-semibold ${r.saldoBaru < 0 ? 'text-red-600' : 'text-gray-900'}`}>{fmtAngka(r.saldoBaru)}</td>
+              <td className="px-2 py-1 text-right tabular-nums text-amber-700">{fmtSelisih(r.saldoBaru - r.saldoLama)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function Tag({ tone, children }: { tone: 'red' | 'amber' | 'green' | 'blue' | 'gray'; children: React.ReactNode }) {
   const cls = {
     red: 'bg-red-50 text-red-700',
@@ -107,7 +141,7 @@ export default function KartuStok({ type, idBarang, onSaved }: { type: KeluarTyp
   const [alasan, setAlasan] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<{ message: string; stale: boolean } | null>(null)
-  const [notice, setNotice] = useState('')
+  const [notice, setNotice] = useState<{ text: string; terdampak: BarisTerdampak[] } | null>(null)
   const seqRef = useRef(0)
   const reqRef = useRef(0)
 
@@ -284,7 +318,10 @@ export default function KartuStok({ type, idBarang, onSaved }: { type: KeluarTyp
       const hasil = await simpanKartu(buildPayload())
       setReview(false)
       setAlasan('')
-      setNotice(`Tersimpan: ${hasil.iBerubah} saldo transaksi dan ${hasil.snapshotBerubah} snapshot ditulis ulang. Sisa saldo ${fmtAngka(hasil.G)}.`)
+      setNotice({
+        text: `Tersimpan: ${hasil.iBerubah} saldo transaksi dan ${hasil.snapshotBerubah} snapshot ditulis ulang. Sisa saldo ${fmtAngka(hasil.G)}.`,
+        terdampak: hasil.terdampak ?? [],
+      })
       await load()
       onSaved()
     } catch (err) {
@@ -437,7 +474,7 @@ export default function KartuStok({ type, idBarang, onSaved }: { type: KeluarTyp
             </p>
           </div>
           <button
-            onClick={() => { setNotice(''); void load() }}
+            onClick={() => { setNotice(null); void load() }}
             disabled={loading}
             className="flex items-center gap-1.5 text-sm border border-gray-300 rounded-lg px-3 py-1.5 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
           >
@@ -446,7 +483,17 @@ export default function KartuStok({ type, idBarang, onSaved }: { type: KeluarTyp
           </button>
         </div>
 
-        {notice && <div className="text-sm bg-emerald-50 text-emerald-800 rounded-lg px-3 py-2">{notice}</div>}
+        {notice && (
+          <div className="text-sm bg-emerald-50 text-emerald-800 rounded-lg px-3 py-2 space-y-2">
+            <div>{notice.text}</div>
+            {notice.terdampak.length > 0 && (
+              <details>
+                <summary className="cursor-pointer font-medium">Lihat {notice.terdampak.length} baris yang saldonya berubah</summary>
+                <div className="mt-2"><TabelTerdampak rows={notice.terdampak} /></div>
+              </details>
+            )}
+          </div>
+        )}
         {error && <div className="text-sm bg-red-50 text-red-700 rounded-lg px-3 py-2">{error}</div>}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-gray-200 border border-gray-200 rounded-xl overflow-hidden">
@@ -611,7 +658,7 @@ export default function KartuStok({ type, idBarang, onSaved }: { type: KeluarTyp
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => { setNotice(''); void load() }}
+            onClick={() => { setNotice(null); void load() }}
             disabled={ringkas.total === 0}
             className="text-sm border border-gray-300 rounded-lg px-3 py-2 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
           >
@@ -639,7 +686,7 @@ export default function KartuStok({ type, idBarang, onSaved }: { type: KeluarTyp
               </button>
               {saveError?.stale ? (
                 <button
-                  onClick={() => { setReview(false); setNotice(''); void load() }}
+                  onClick={() => { setReview(false); setNotice(null); void load() }}
                   className="text-sm bg-blue-600 text-white rounded-lg px-4 py-2 font-medium hover:bg-blue-700"
                 >
                   Muat ulang kartu
@@ -682,6 +729,9 @@ export default function KartuStok({ type, idBarang, onSaved }: { type: KeluarTyp
     ringkas!.snapChanged.forEach((s) => der.push(['Snapshot', `${ymLabel(s.ym)}: ${fmtAngka(s.saldo)} → ${fmtAngka(calc!.openAt(s.ym))}`]))
     if (ringkas!.fChanged) der.push(['Master F', `${fmtAngka(b.saldo_awal)} → ${fmtAngka(calc!.F)}`])
     if (ringkas!.gChanged) der.push(['Master G', `${fmtAngka(b.sisa_saldo)} → ${fmtAngka(calc!.G)}`])
+    const terdampak: BarisTerdampak[] = sorted
+      .filter((r) => !r.deleted && !r.isNew && r.saldo0 !== null && beda(calc!.saldo[r.uid], r.saldo0))
+      .map((r) => ({ kind: r.kind, id: r.id!, tanggal: r.tanggal, qty: r.qty, saldoLama: r.saldo0!, saldoBaru: calc!.saldo[r.uid] }))
 
     const list = (items: [string, React.ReactNode][]) => (
       <ul className="space-y-1 text-sm">
@@ -698,6 +748,12 @@ export default function KartuStok({ type, idBarang, onSaved }: { type: KeluarTyp
           ? <div><div className="font-semibold text-sm mb-1">Yang Anda ubah</div>{list(lines)}</div>
           : <p className="text-sm text-gray-600">Tidak ada input yang diubah. Hanya saldo yang salah yang diperbaiki.</p>}
         {der.length > 0 && <div><div className="font-semibold text-sm mb-1">Yang ikut berubah</div>{list(der)}</div>}
+        {terdampak.length > 0 && (
+          <div>
+            <div className="font-semibold text-sm mb-1">Transaksi yang saldonya berubah ({terdampak.length})</div>
+            <TabelTerdampak rows={terdampak} />
+          </div>
+        )}
         {dariYm < nowYm && (
           <div className="text-sm bg-amber-50 text-amber-800 rounded-lg px-3 py-2">
             Laporan stok <b>{ymLabel(dariYm)}</b> sampai <b>{ymLabel(nowYm)}</b> ikut berubah.

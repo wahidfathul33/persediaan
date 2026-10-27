@@ -1,8 +1,17 @@
 /**
  * ============================================================
  *  INVENTORY MANAGEMENT — Google Apps Script
- *  Production-ready | v3.7
+ *  Production-ready | v3.8
  * ============================================================
+ *
+ *  CHANGELOG v3.8 (KARTU STOK — HAPUS TERVERIFIKASI):
+ *  - gudangSimpanKartu menghapus baris LEBIH DULU, lalu membaca ulang kolom A.
+ *    Jika ID yang dihapus masih ada, atau ada ID lain yang ikut hilang, simpanan
+ *    ditolak sebelum perubahan lain ditulis dan dicatat di Log Gudang sebagai
+ *    "Gagal hapus kartu stok". Sebelumnya log bisa mencatat "1 dihapus" padahal
+ *    barisnya tetap ada.
+ *  - Hasil simpan kartu menyertakan `terdampak`: daftar transaksi yang kolom I-nya
+ *    ditulis ulang (id, tanggal, saldo lama → baru).
  *
  *  CHANGELOG v3.7 (MENCEGAH LONCATAN STOK):
  *  - updateBarang tidak lagi menyimpan saldo apa adanya. sisa_saldo dari payload
@@ -1695,6 +1704,18 @@ function kartuHash(tx, barang) {
     .join("")
 }
 
+/** id (kolom A) → nomor baris sheet. Hanya kolom A yang dibaca. */
+function idRowMap(sheet) {
+  const m = {}
+  const last = sheet.getLastRow()
+  if (last < 2) return m
+  sheet.getRange(2, 1, last - 1, 1).getValues().forEach(function(r, i) {
+    const id = String(r[0]).trim()
+    if (id && m[id] === undefined) m[id] = i + 2
+  })
+  return m
+}
+
 function gudangKartuResponse(data) {
   if (!isValidType(data.type)) return errorResponse("invalid type: " + data.type)
   const k = kartuData(data.type, String(data.id_barang || "").trim())
@@ -1774,14 +1795,56 @@ function gudangSimpanKartu(data) {
   const sheets = { masuk: getMasukSheet(type), keluar: getKeluarSheet(type) }
   const b = cur.barang
 
-  // 1. Ubah tanggal/qty (nomor baris belum bergeser).
+  // 1. Hapus LEBIH DULU, lalu baca ulang kolom A untuk memastikan barisnya
+  //    benar-benar hilang (v3.8). Pernah terjadi simpanan tercatat "1 dihapus"
+  //    padahal barisnya tetap ada. Kalau gagal, berhenti di sini sebelum
+  //    ubah/tambah/hitung ulang. Hapus di sheet Masuk yang sudah berhasil
+  //    disebut di pesan karena tidak dibatalkan.
+  const rowNow = { masuk: null, keluar: null }   // id → nomor baris sesudah hapus
+  const sudahDihapus = []
+  for (let k = 0; k < 2; k++) {
+    const kind  = k === 0 ? "masuk" : "keluar"
+    const items = del.filter(function(o) { return o.kind === kind })
+    if (items.length === 0) continue
+    const sheet  = sheets[kind]
+    const before = idRowMap(sheet)
+    items.map(function(o) { return byKey[kind + "|" + o.id].rowIndex })
+      .sort(function(a, c) { return c - a })
+      .forEach(function(row) { sheet.deleteRow(row) })
+    SpreadsheetApp.flush()
+
+    const after = idRowMap(sheet)
+    const masih = items.filter(function(o) { return after[String(o.id)] !== undefined }).map(function(o) { return String(o.id) })
+    const mau   = {}
+    items.forEach(function(o) { mau[String(o.id)] = true })
+    const salah = Object.keys(before).filter(function(id) { return after[id] === undefined && !mau[id] })
+    if (masih.length || salah.length) {
+      const pesan = "Penghapusan di sheet " + sheet.getName() + " tidak sesuai. " +
+        (masih.length ? "Masih ada: " + masih.join(", ") + ". " : "") +
+        (salah.length ? "PERINGATAN — ikut terhapus padahal tidak dipilih: " + salah.join(", ") + ". " : "") +
+        (sudahDihapus.length ? "Sudah terhapus lebih dulu: " + sudahDihapus.join(", ") + ". " : "") +
+        "Simpanan dihentikan sebelum perubahan lain ditulis. Pastikan deployment Apps Script memakai versi terbaru."
+      tulisLogGudang(data, "Gagal hapus kartu stok", {
+        type: type, id_barang: idB, nama: b.nama_barang, ringkasan: pesan,
+        detail: { ops: ops, masih: masih, ikutTerhapus: salah, sudahDihapus: sudahDihapus },
+      })
+      // Sebagian baris mungkin sudah hilang — cache laporan jangan menyajikan angka lama.
+      clearBarangCache(type)
+      bumpStokGenAll()
+      return errorResponse(pesan, 500)
+    }
+    rowNow[kind] = after
+    items.forEach(function(o) { sudahDihapus.push(String(o.id)) })
+  }
+
+  // 2. Ubah tanggal/qty. Nomor baris diambil ulang jika sheet itu baru dihapus.
   upd.forEach(function(o) {
-    const x = byKey[o.kind + "|" + o.id]
-    sheets[o.kind].getRange(x.rowIndex, 7, 1, 2).setValues([[o.tanggal, Number(o.qty)]])
-    if (o.keterangan !== undefined) sheets[o.kind].getRange(x.rowIndex, 10).setValue(String(o.keterangan))
+    const row = rowNow[o.kind] ? rowNow[o.kind][String(o.id)] : byKey[o.kind + "|" + o.id].rowIndex
+    sheets[o.kind].getRange(row, 7, 1, 2).setValues([[o.tanggal, Number(o.qty)]])
+    if (o.keterangan !== undefined) sheets[o.kind].getRange(row, 10).setValue(String(o.keterangan))
   })
 
-  // 2. Tambah di akhir sheet. ID diberikan menurut urutan array — urutan yang
+  // 3. Tambah di akhir sheet. ID diberikan menurut urutan array — urutan yang
   //    sama dipakai pratinjau di browser untuk transaksi baru di hari yang sama.
   const idBaru = []
   ;["masuk", "keluar"].forEach(function(kind) {
@@ -1792,14 +1855,6 @@ function gudangSimpanKartu(data) {
       idBaru.push(ids[i])
       return [ids[i], idB, b.kode_barang, b.nama_barang, b.merk, b.satuan, o.tanggal, Number(o.qty), 0, String(o.keterangan || "")]
     }))
-  })
-
-  // 3. Hapus dari baris paling bawah supaya nomor baris di atasnya tetap benar.
-  ;["masuk", "keluar"].forEach(function(kind) {
-    del.filter(function(o) { return o.kind === kind })
-      .map(function(o) { return byKey[kind + "|" + o.id].rowIndex })
-      .sort(function(a, c) { return c - a })
-      .forEach(function(row) { sheets[kind].deleteRow(row) })
   })
 
   // 4. Tulis ulang kolom I, snapshot, F, G.
@@ -1848,10 +1903,18 @@ function tulisUlangSaldoBarang(type, idB, pembuka, barangRow) {
 
   // 1. Kolom I
   const edits = { masuk: {}, keluar: {} }
+  const terdampak = []
   let s = pembuka, iBerubah = 0
   led.forEach(function(e) {
     s += e.eff
-    if (Math.abs(e.saldo - s) > EPS) { edits[e.kind][e.rowIndex] = s; iBerubah++ }
+    if (Math.abs(e.saldo - s) > EPS) {
+      edits[e.kind][e.rowIndex] = s
+      iBerubah++
+      terdampak.push({
+        kind: e.kind, id: String(rowsBy[e.kind][e.rowIndex - 2][0]).trim(), tanggal: fmtDay(e.pos[0]),
+        qty: Math.abs(e.eff), saldoLama: e.saldo, saldoBaru: s,
+      })
+    }
   })
   const G = s
   ;["masuk", "keluar"].forEach(function(kind) {
@@ -1890,6 +1953,7 @@ function tulisUlangSaldoBarang(type, idB, pembuka, barangRow) {
   return {
     iBerubah: iBerubah, snapshotBerubah: snapshotBerubah,
     F: F, G: G, Flama: Number(lama[0]) || 0, Glama: Number(lama[1]) || 0,
+    terdampak: terdampak,
   }
 }
 

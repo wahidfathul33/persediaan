@@ -101,6 +101,16 @@ export interface SimpanKartuPayload {
   }
 }
 
+/** Transaksi yang saldo kolom I-nya berubah. */
+export interface BarisTerdampak {
+  kind: Kind
+  id: string
+  tanggal: string
+  qty: number
+  saldoLama: number
+  saldoBaru: number
+}
+
 export interface SimpanKartuHasil {
   iBerubah: number
   snapshotBerubah: number
@@ -109,6 +119,8 @@ export interface SimpanKartuHasil {
   Flama: number
   Glama: number
   idBaru: string[]
+  /** Tidak ada di Apps Script sebelum v3.8. */
+  terdampak?: BarisTerdampak[]
 }
 
 export interface SnapshotStatus {
