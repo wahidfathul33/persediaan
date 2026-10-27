@@ -1808,10 +1808,18 @@ function gudangSimpanKartu(data) {
     if (items.length === 0) continue
     const sheet  = sheets[kind]
     const before = idRowMap(sheet)
-    items.map(function(o) { return byKey[kind + "|" + o.id].rowIndex })
+    const rows   = items.map(function(o) { return byKey[kind + "|" + o.id].rowIndex })
       .sort(function(a, c) { return c - a })
-      .forEach(function(row) { sheet.deleteRow(row) })
+    // Bahan diagnosa jika hapus gagal: isi kolom A baris yang akan dihapus, dan ukuran sheet.
+    const diag = {
+      baris: rows,
+      isiA: rows.map(function(r) { return String(sheet.getRange(r, 1).getValue()) }),
+      lastRow: [sheet.getLastRow()], maxRows: [sheet.getMaxRows()],
+    }
+    rows.forEach(function(row) { sheet.deleteRow(row) })
     SpreadsheetApp.flush()
+    diag.lastRow.push(sheet.getLastRow())
+    diag.maxRows.push(sheet.getMaxRows())
 
     const after = idRowMap(sheet)
     const masih = items.filter(function(o) { return after[String(o.id)] !== undefined }).map(function(o) { return String(o.id) })
@@ -1819,14 +1827,22 @@ function gudangSimpanKartu(data) {
     items.forEach(function(o) { mau[String(o.id)] = true })
     const salah = Object.keys(before).filter(function(id) { return after[id] === undefined && !mau[id] })
     if (masih.length || salah.length) {
+      diag.sekarangDiBaris = masih.map(function(id) { return after[id] })
+      diag.filter = sheet.getFilter() ? "ada" : "tidak"
+      diag.proteksi = sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE).length +
+        sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET).length
       const pesan = "Penghapusan di sheet " + sheet.getName() + " tidak sesuai. " +
         (masih.length ? "Masih ada: " + masih.join(", ") + ". " : "") +
         (salah.length ? "PERINGATAN — ikut terhapus padahal tidak dipilih: " + salah.join(", ") + ". " : "") +
         (sudahDihapus.length ? "Sudah terhapus lebih dulu: " + sudahDihapus.join(", ") + ". " : "") +
-        "Simpanan dihentikan sebelum perubahan lain ditulis. Pastikan deployment Apps Script memakai versi terbaru."
+        "Simpanan dihentikan sebelum perubahan lain ditulis. " +
+        "[diagnosa: baris " + diag.baris.join(",") + " berisi " + diag.isiA.join(",") +
+        "; lastRow " + diag.lastRow.join("→") + "; maxRows " + diag.maxRows.join("→") +
+        "; sekarang di baris " + diag.sekarangDiBaris.join(",") +
+        "; filter " + diag.filter + "; proteksi " + diag.proteksi + "]"
       tulisLogGudang(data, "Gagal hapus kartu stok", {
         type: type, id_barang: idB, nama: b.nama_barang, ringkasan: pesan,
-        detail: { ops: ops, masih: masih, ikutTerhapus: salah, sudahDihapus: sudahDihapus },
+        detail: { ops: ops, masih: masih, ikutTerhapus: salah, sudahDihapus: sudahDihapus, diag: diag },
       })
       // Sebagian baris mungkin sudah hilang — cache laporan jangan menyajikan angka lama.
       clearBarangCache(type)
